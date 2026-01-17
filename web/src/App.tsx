@@ -94,6 +94,8 @@ export default function App() {
   const [queueGroups, setQueueGroups] = useState<QueueGroup[]>([]);
   const [queueGroupId, setQueueGroupId] = useState<number | null>(null);
   const [queueSaving, setQueueSaving] = useState(false);
+  const [queueDryRun, setQueueDryRun] = useState(false);
+  const [queueDryRunSaving, setQueueDryRunSaving] = useState(false);
   const [unmatched, setUnmatched] = useState<UnmatchedLineItem[]>([]);
   const [matched, setMatched] = useState<MatchedLineItem[]>([]);
   const [activeTab, setActiveTab] = useState<
@@ -134,6 +136,7 @@ export default function App() {
         excludedData,
         matchedData,
         hiddenVariantsData,
+        queueDryRunData,
       ] =
         await Promise.all([
         fetchJson<{ products: ShopifyProduct[] }>("/api/shopify/products"),
@@ -145,6 +148,7 @@ export default function App() {
           fetchJson<{ excluded: QueueExcludedProduct[] }>("/api/products/queue-excluded"),
           fetchJson<{ items: MatchedLineItem[] }>("/api/matched"),
           fetchJson<{ hidden: HiddenVariant[] }>("/api/variants/hidden"),
+          fetchJson<{ enabled: boolean }>("/api/settings/queue-dry-run"),
       ]);
 
       const filteredProducts = productData.products
@@ -158,6 +162,7 @@ export default function App() {
       setMappings(mappingData.mappings);
       setQueueGroups(groupData.groups);
       setQueueGroupId(queueSetting.groupId ?? null);
+      setQueueDryRun(queueDryRunData.enabled ?? false);
       setUnmatched(unmatchedData.items);
       setHiddenProductIds(
         new Set(hiddenData.hidden.map((item) => item.shopifyProductId))
@@ -247,6 +252,20 @@ export default function App() {
       });
     } finally {
       setQueueSaving(false);
+    }
+  };
+
+  const saveQueueDryRun = async (enabled: boolean) => {
+    setQueueDryRunSaving(true);
+    try {
+      await fetchJson("/api/settings/queue-dry-run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled }),
+      });
+      setQueueDryRun(enabled);
+    } finally {
+      setQueueDryRunSaving(false);
     }
   };
 
@@ -412,6 +431,15 @@ export default function App() {
                     </option>
                   ))}
                 </select>
+                <label className="checkbox">
+                  <input
+                    type="checkbox"
+                    checked={queueDryRun}
+                    onChange={(event) => saveQueueDryRun(event.target.checked)}
+                    disabled={queueDryRunSaving}
+                  />
+                  Dry run
+                </label>
                 <button className="btn" onClick={saveQueueGroup} disabled={queueSaving}>
                   Save
                 </button>

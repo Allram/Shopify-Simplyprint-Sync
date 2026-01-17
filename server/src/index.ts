@@ -8,6 +8,7 @@ import { fileURLToPath } from "url";
 import axios from "axios";
 import { PrismaClient } from "@prisma/client";
 import { z } from "zod";
+import { createClient } from "redis";
 
 dotenv.config();
 
@@ -25,6 +26,20 @@ const SIMPLYPRINT_COMPANY_ID = process.env.SIMPLYPRINT_COMPANY_ID;
 const SIMPLYPRINT_API_KEY = process.env.SIMPLYPRINT_API_KEY;
 const SIMPLYPRINT_QUEUE_GROUP_NAME =
   process.env.SIMPLYPRINT_QUEUE_GROUP_NAME ?? "Shopify";
+const SIMPLYPRINT_RATE_LIMIT_PER_SECOND = Number.isFinite(
+  Number(process.env.SIMPLYPRINT_RATE_LIMIT_PER_SECOND)
+)
+  ? Number(process.env.SIMPLYPRINT_RATE_LIMIT_PER_SECOND)
+  : 5;
+
+const REDIS_URL = process.env.REDIS_URL;
+const REDIS_HOST = process.env.REDIS_HOST;
+const REDIS_PORT = Number(process.env.REDIS_PORT ?? 6379);
+const REDIS_PASSWORD = process.env.REDIS_PASSWORD;
+const REDIS_DB = Number(process.env.REDIS_DB ?? 0);
+const SIMPLYPRINT_FILE_CACHE_TTL_SECONDS = Number(
+  process.env.SIMPLYPRINT_FILE_CACHE_TTL_SECONDS ?? 60 * 60 * 24
+);
 
 const BASIC_AUTH_USER = process.env.BASIC_AUTH_USER;
 const BASIC_AUTH_PASS = process.env.BASIC_AUTH_PASS;
@@ -164,17 +179,14 @@ app.post(
           try {
             await addToSimplyPrintQueue(fileName, quantity);
             if (orderId) {
-              await prisma.matchedLineItem.create({
-                data: {
-                  orderId,
-                  orderName,
-                  shopifyProductId: productId,
-                  shopifyVariantId: variantId,
-                  sku: item?.sku ? String(item.sku) : null,
-                  quantity,
-                  fileName,
-                  queuedAt: new Date(),
-                },
+              await recordMatchedLineItem({
+                orderId,
+                orderName,
+                productId,
+                variantId,
+                sku: item?.sku ? String(item.sku) : null,
+                quantity,
+                fileName,
               });
             }
           } catch (error) {
@@ -453,15 +465,17 @@ app.get("/api/simplyprint/files", async (req: Request, res: Response) => {
     ensureSimplyPrintEnv();
     const search = String(req.query.search ?? "").trim();
 
-    const response = await axios.get(`${simplyPrintBaseUrl()}/files/GetFiles`, {
-      headers: {
-        "X-API-KEY": SIMPLYPRINT_API_KEY,
-      },
-      params: {
-        search: search || undefined,
-        global_search: true,
-      },
-    });
+    const response = await withSimplyPrintRateLimit(() =>
+      axios.get(`${simplyPrintBaseUrl()}/files/GetFiles`, {
+        headers: {
+          "X-API-KEY": SIMPLYPRINT_API_KEY,
+        },
+        params: {
+          search: search || undefined,
+          global_search: true,
+        },
+      })
+    );
 
     const files = (response.data?.files ?? []).map((file: any) => ({
       id: file.id,
@@ -502,15 +516,17 @@ app.get("/api/simplyprint/suggest", async (req: Request, res: Response) => {
 
     const responses = await Promise.all(
       tokens.map((token) =>
-        axios.get(`${simplyPrintBaseUrl()}/files/GetFiles`, {
-          headers: {
-            "X-API-KEY": SIMPLYPRINT_API_KEY,
-          },
-          params: {
-            search: token,
-            global_search: true,
-          },
-        })
+        withSimplyPrintRateLimit(() =>
+          axios.get(`${simplyPrintBaseUrl()}/files/GetFiles`, {
+            headers: {
+              "X-API-KEY": SIMPLYPRINT_API_KEY,
+            },
+            params: {
+              search: token,
+              global_search: true,
+            },
+          })
+        )
       )
     );
 
@@ -552,11 +568,13 @@ app.get("/api/simplyprint/suggest", async (req: Request, res: Response) => {
 app.get("/api/simplyprint/queue-groups", async (_req: Request, res: Response) => {
   try {
     ensureSimplyPrintEnv();
-    const response = await axios.get(`${simplyPrintBaseUrl()}/queue/groups/Get`, {
-      headers: {
-        "X-API-KEY": SIMPLYPRINT_API_KEY,
-      },
-    });
+    const response = await withSimplyPrintRateLimit(() =>
+      axios.get(`${simplyPrintBaseUrl()}/queue/groups/Get`, {
+        headers: {
+          "X-API-KEY": SIMPLYPRINT_API_KEY,
+        },
+      })
+    );
 
     res.json({ groups: response.data?.list ?? [] });
   } catch (error) {
@@ -626,17 +644,14 @@ app.post("/api/unmatched/:id/queue", async (req: Request, res: Response) => {
     }
 
     await addToSimplyPrintQueue(payload.fileName, item.quantity);
-    const matched = await prisma.matchedLineItem.create({
-      data: {
-        orderId: item.orderId,
-        orderName: item.orderName,
-        shopifyProductId: item.shopifyProductId,
-        shopifyVariantId: item.shopifyVariantId,
-        sku: item.sku,
-        quantity: item.quantity,
-        fileName: payload.fileName,
-        queuedAt: new Date(),
-      },
+    const matched = await recordMatchedLineItem({
+      orderId: item.orderId,
+      orderName: item.orderName,
+      productId: item.shopifyProductId,
+      variantId: item.shopifyVariantId,
+      sku: item.sku,
+      quantity: item.quantity,
+      fileName: payload.fileName,
     });
     await prisma.unmatchedLineItem.delete({ where: { id } });
 
@@ -664,8 +679,20 @@ app.get("/api/settings/queue-group", async (_req: Request, res: Response) => {
   res.json({ groupId: Number.isFinite(groupId) ? groupId : null });
 });
 
+app.get("/api/settings/queue-dry-run", async (_req: Request, res: Response) => {
+  const setting = await prisma.setting.findUnique({
+    where: { key: "simplyprintQueueDryRun" },
+  });
+  const enabled = setting?.value === "true";
+  res.json({ enabled });
+});
+
 const queueGroupSchema = z.object({
   groupId: z.number().nullable(),
+});
+
+const queueDryRunSchema = z.object({
+  enabled: z.boolean(),
 });
 
 app.post("/api/settings/queue-group", async (req: Request, res: Response) => {
@@ -693,6 +720,23 @@ app.post("/api/settings/queue-group", async (req: Request, res: Response) => {
   } catch (error) {
     console.error("Failed to save queue group setting", error);
     res.status(400).json({ error: "Invalid queue group setting" });
+  }
+});
+
+app.post("/api/settings/queue-dry-run", async (req: Request, res: Response) => {
+  try {
+    const { enabled } = queueDryRunSchema.parse(req.body);
+    await prisma.setting.upsert({
+      where: { key: "simplyprintQueueDryRun" },
+      update: { value: enabled ? "true" : "false" },
+      create: { key: "simplyprintQueueDryRun", value: enabled ? "true" : "false" },
+    });
+    cachedQueueDryRun = enabled;
+    cachedQueueDryRunAt = Date.now();
+    res.json({ enabled });
+  } catch (error) {
+    console.error("Failed to save dry run setting", error);
+    res.status(400).json({ error: "Invalid dry run setting" });
   }
 });
 
@@ -818,6 +862,16 @@ function normalizeMappingFiles(mapping: any): string[] {
 
 let cachedQueueGroupId: number | null = null;
 let cachedQueueGroupAt = 0;
+let cachedQueueDryRun: boolean | null = null;
+let cachedQueueDryRunAt = 0;
+
+let simplyPrintLastRequestAt = 0;
+let simplyPrintRequestChain: Promise<unknown> = Promise.resolve();
+
+let redisClientPromise:
+  | ReturnType<typeof createClient>
+  | null
+  | Promise<ReturnType<typeof createClient>> = null;
 
 async function getQueueGroupId() {
   if (cachedQueueGroupId !== null && Date.now() - cachedQueueGroupAt < 5 * 60_000) {
@@ -834,11 +888,13 @@ async function getQueueGroupId() {
     return cachedQueueGroupId;
   }
 
-  const response = await axios.get(`${simplyPrintBaseUrl()}/queue/groups/Get`, {
-    headers: {
-      "X-API-KEY": SIMPLYPRINT_API_KEY,
-    },
-  });
+  const response = await withSimplyPrintRateLimit(() =>
+    axios.get(`${simplyPrintBaseUrl()}/queue/groups/Get`, {
+      headers: {
+        "X-API-KEY": SIMPLYPRINT_API_KEY,
+      },
+    })
+  );
 
   const groups = response.data?.list ?? [];
   const match = groups.find(
@@ -852,38 +908,207 @@ async function getQueueGroupId() {
   return cachedQueueGroupId;
 }
 
+async function getQueueDryRun() {
+  if (cachedQueueDryRun !== null && Date.now() - cachedQueueDryRunAt < 5 * 60_000) {
+    return cachedQueueDryRun;
+  }
+
+  const setting = await prisma.setting.findUnique({
+    where: { key: "simplyprintQueueDryRun" },
+  });
+  cachedQueueDryRun = setting?.value === "true";
+  cachedQueueDryRunAt = Date.now();
+  return cachedQueueDryRun;
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function withSimplyPrintRateLimit<T>(fn: () => Promise<T>) {
+  const minInterval = Math.max(1, Math.floor(1000 / Math.max(1, SIMPLYPRINT_RATE_LIMIT_PER_SECOND)));
+  simplyPrintRequestChain = simplyPrintRequestChain
+    .catch(() => undefined)
+    .then(async () => {
+      const now = Date.now();
+      const waitFor = Math.max(0, minInterval - (now - simplyPrintLastRequestAt));
+      if (waitFor > 0) {
+        await sleep(waitFor);
+      }
+      try {
+        return await fn();
+      } finally {
+        simplyPrintLastRequestAt = Date.now();
+      }
+    });
+
+  return simplyPrintRequestChain as Promise<T>;
+}
+
+async function getRedisClient() {
+  const hasRedisConfig =
+    !!REDIS_URL ||
+    !!REDIS_HOST ||
+    !!REDIS_PASSWORD ||
+    !!process.env.REDIS_DB ||
+    !!process.env.REDIS_PORT;
+
+  if (!hasRedisConfig) {
+    return null;
+  }
+
+  if (redisClientPromise) {
+    return redisClientPromise as ReturnType<typeof createClient>;
+  }
+
+  const client = REDIS_URL
+    ? createClient({ url: REDIS_URL })
+    : createClient({
+        socket: {
+          host: REDIS_HOST ?? "127.0.0.1",
+          port: REDIS_PORT,
+        },
+        password: REDIS_PASSWORD,
+        database: REDIS_DB,
+      });
+
+  client.on("error", (error) => {
+    console.error("Redis error", error);
+  });
+
+  redisClientPromise = client
+    .connect()
+    .then(() => client)
+    .catch((error) => {
+      console.error("Failed to connect to Redis", error);
+      redisClientPromise = null;
+      return null as unknown as ReturnType<typeof createClient>;
+    });
+
+  return redisClientPromise as ReturnType<typeof createClient>;
+}
+
+async function getCachedSimplyPrintFileId(cacheKey: string) {
+  try {
+    const client = await getRedisClient();
+    if (!client) {
+      return null;
+    }
+    const value = await client.get(cacheKey);
+    return value ? Number(value) : null;
+  } catch (error) {
+    console.error("Failed to read from Redis", error);
+    return null;
+  }
+}
+
+async function setCachedSimplyPrintFileId(cacheKey: string, fileId: number) {
+  try {
+    const client = await getRedisClient();
+    if (!client) {
+      return;
+    }
+    await client.set(cacheKey, String(fileId), {
+      EX: SIMPLYPRINT_FILE_CACHE_TTL_SECONDS,
+    });
+  } catch (error) {
+    console.error("Failed to write to Redis", error);
+  }
+}
+
+async function recordMatchedLineItem(input: {
+  orderId: string;
+  orderName: string | null;
+  productId: string;
+  variantId: string | null;
+  sku: string | null;
+  quantity: number;
+  fileName: string;
+}) {
+  const existing = await prisma.matchedLineItem.findFirst({
+    where: {
+      orderId: input.orderId,
+      shopifyProductId: input.productId,
+      shopifyVariantId: input.variantId,
+      fileName: input.fileName,
+    },
+  });
+
+  if (existing) {
+    return prisma.matchedLineItem.update({
+      where: { id: existing.id },
+      data: {
+        quantity: { increment: input.quantity },
+        queuedAt: new Date(),
+      },
+    });
+  }
+
+  return prisma.matchedLineItem.create({
+    data: {
+      orderId: input.orderId,
+      orderName: input.orderName,
+      shopifyProductId: input.productId,
+      shopifyVariantId: input.variantId,
+      sku: input.sku,
+      quantity: input.quantity,
+      fileName: input.fileName,
+      queuedAt: new Date(),
+    },
+  });
+}
+
 async function addToSimplyPrintQueue(fileName: string, amount: number) {
   ensureSimplyPrintEnv();
 
   const fileId = await resolveSimplyPrintFileId(fileName);
+  const dryRun = await getQueueDryRun();
+  if (dryRun) {
+    console.log(
+      "Dry-run enabled, skipping queue add",
+      JSON.stringify({ fileName, amount, fileId })
+    );
+    return;
+  }
+
   const groupId = await getQueueGroupId();
 
-  await axios.post(
-    `${simplyPrintBaseUrl()}/queue/AddItem`,
-    {
-      filesystem: fileId,
-      amount,
-      group: groupId,
-    },
-    {
-      headers: {
-        "X-API-KEY": SIMPLYPRINT_API_KEY,
+  await withSimplyPrintRateLimit(() =>
+    axios.post(
+      `${simplyPrintBaseUrl()}/queue/AddItem`,
+      {
+        filesystem: fileId,
+        amount,
+        group: groupId,
       },
-    }
+      {
+        headers: {
+          "X-API-KEY": SIMPLYPRINT_API_KEY,
+        },
+      }
+    )
   );
 }
 
 async function resolveSimplyPrintFileId(fileName: string) {
+  const cacheKey = `simplyprint:file-id:${normalizeText(fileName)}`;
+  const cached = await getCachedSimplyPrintFileId(cacheKey);
+  if (cached !== null) {
+    return cached;
+  }
+
   const fetchFiles = async (search: string) => {
-    const response = await axios.get(`${simplyPrintBaseUrl()}/files/GetFiles`, {
-      headers: {
-        "X-API-KEY": SIMPLYPRINT_API_KEY,
-      },
-      params: {
-        search,
-        global_search: true,
-      },
-    });
+    const response = await withSimplyPrintRateLimit(() =>
+      axios.get(`${simplyPrintBaseUrl()}/files/GetFiles`, {
+        headers: {
+          "X-API-KEY": SIMPLYPRINT_API_KEY,
+        },
+        params: {
+          search,
+          global_search: true,
+        },
+      })
+    );
 
     return response.data?.files ?? [];
   };
@@ -944,10 +1169,12 @@ async function resolveSimplyPrintFileId(fileName: string) {
       });
 
       if (fallback) {
+        await setCachedSimplyPrintFileId(cacheKey, fallback.id);
         return fallback.id;
       }
     }
   } else {
+    await setCachedSimplyPrintFileId(cacheKey, match.id);
     return match.id;
   }
 
