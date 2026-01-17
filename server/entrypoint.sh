@@ -17,4 +17,4 @@ if [ -n "$DATABASE_URL" ]; then
 fi
 
 echo "Starting server..."
-node dist/index.js
+exec node dist/index.js

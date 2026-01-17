@@ -463,15 +463,15 @@ function MappingRow({
   const [suggestMessage, setSuggestMessage] = useState<string | null>(null);
   const [suggested, setSuggested] = useState<FileItem[]>([]);
   const [selectedSuggestion, setSelectedSuggestion] = useState<string>("");
+  const [activeSearch, setActiveSearch] = useState<string>("");
 
   useEffect(() => {
     setFileNames(getMappingFiles(current));
   }, [current?.simplyprintFileName, current?.simplyprintFileNames]);
 
   useEffect(() => {
-    const searchValue =
-      fileNames.find((name: string) => name.trim().length > 0) ?? "";
-    if (!searchValue.trim()) {
+    const searchValue = activeSearch.trim();
+    if (!searchValue) {
       setFiles([]);
       return;
     }
@@ -479,7 +479,7 @@ function MappingRow({
     const handle = window.setTimeout(async () => {
       try {
         const result = await fetchJson<{ files: FileItem[] }>(
-          `/api/simplyprint/files?search=${encodeURIComponent(searchValue.trim())}`
+          `/api/simplyprint/files?search=${encodeURIComponent(searchValue)}`
         );
         setFiles(result.files.slice(0, 8));
       } catch (error) {
@@ -488,7 +488,7 @@ function MappingRow({
     }, 300);
 
     return () => window.clearTimeout(handle);
-  }, [fileNames]);
+  }, [activeSearch]);
 
   useEffect(() => {
     if (selectedSuggestion) {
@@ -565,6 +565,7 @@ function MappingRow({
       next[index] = value;
       return next;
     });
+    setActiveSearch(value);
   };
 
   const addFileInput = () => {
@@ -590,6 +591,7 @@ function MappingRow({
               <input
                 list={`files-${productId}-${variantId ?? "product"}`}
                 value={name}
+                onFocus={() => setActiveSearch(name)}
                 onChange={(event: React.ChangeEvent<HTMLInputElement>) =>
                   updateFileName(index, event.target.value)
                 }

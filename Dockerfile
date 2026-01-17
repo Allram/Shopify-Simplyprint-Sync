@@ -35,5 +35,6 @@ COPY --from=build /app/web/dist /app/web/dist
 
 EXPOSE 4000
 WORKDIR /app/server
+STOPSIGNAL SIGTERM
 RUN chmod +x /app/server/entrypoint.sh
 CMD ["/bin/sh", "/app/server/entrypoint.sh"]
