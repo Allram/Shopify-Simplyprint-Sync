@@ -26,9 +26,42 @@ const SIMPLYPRINT_API_KEY = process.env.SIMPLYPRINT_API_KEY;
 const SIMPLYPRINT_QUEUE_GROUP_NAME =
   process.env.SIMPLYPRINT_QUEUE_GROUP_NAME ?? "Shopify";
 
+const BASIC_AUTH_USER = process.env.BASIC_AUTH_USER;
+const BASIC_AUTH_PASS = process.env.BASIC_AUTH_PASS;
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 app.use(cors());
+app.use((req: Request, res: Response, next: express.NextFunction) => {
+  if (!BASIC_AUTH_USER || !BASIC_AUTH_PASS) {
+    return next();
+  }
+
+  if (
+    req.path.startsWith("/api/webhooks/shopify") ||
+    req.path === "/api/health"
+  ) {
+    return next();
+  }
+
+  const header = req.headers.authorization;
+  if (!header || !header.startsWith("Basic ")) {
+    res.setHeader("WWW-Authenticate", "Basic");
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  const decoded = Buffer.from(header.split(" ")[1], "base64")
+    .toString("utf8")
+    .split(":");
+  const [user, pass] = decoded;
+
+  if (user !== BASIC_AUTH_USER || pass !== BASIC_AUTH_PASS) {
+    res.setHeader("WWW-Authenticate", "Basic");
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  return next();
+});
 
 app.post(
   "/api/webhooks/shopify/orders/create",

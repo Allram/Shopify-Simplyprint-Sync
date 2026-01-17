@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@prisma/client": "^5.10.0",
+    "@types/node": "^20.11.30",
     "axios": "^1.6.8",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",

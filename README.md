@@ -20,6 +20,8 @@ Create a .env file for the server using server/.env.example as a template:
 - SIMPLYPRINT_COMPANY_ID
 - SIMPLYPRINT_API_KEY
 - SIMPLYPRINT_QUEUE_GROUP_NAME
+- BASIC_AUTH_USER (optional)
+- BASIC_AUTH_PASS (optional)
 
 ## Local development
 1. Install dependencies:
@@ -53,6 +55,7 @@ Create a Shopify webhook for orders/create and point it to:
   /api/webhooks/shopify/orders/create
 
 If you set SHOPIFY_WEBHOOK_SECRET, the webhook signature is verified.
+If BASIC_AUTH_USER/BASIC_AUTH_PASS are set, the webhook still works because it is excluded from auth.
 
 ## SimplyPrint queue group
 The queue group name defaults to "Shopify". Create this queue group in SimplyPrint or change SIMPLYPRINT_QUEUE_GROUP_NAME.
