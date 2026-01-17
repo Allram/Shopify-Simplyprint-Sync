@@ -55,6 +55,12 @@ type HiddenProduct = {
   createdAt: string;
 };
 
+type QueueExcludedProduct = {
+  id: number;
+  shopifyProductId: string;
+  createdAt: string;
+};
+
 const fetchJson = async <T,>(input: RequestInfo, init?: RequestInit) => {
   const response = await fetch(input, init);
   if (!response.ok) {
@@ -79,6 +85,9 @@ export default function App() {
   const [hiddenProductIds, setHiddenProductIds] = useState<Set<string>>(
     () => new Set()
   );
+  const [queueExcludedIds, setQueueExcludedIds] = useState<Set<string>>(
+    () => new Set()
+  );
   const [showHidden, setShowHidden] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -98,6 +107,7 @@ export default function App() {
         queueSetting,
         unmatchedData,
         hiddenData,
+        excludedData,
       ] =
         await Promise.all([
         fetchJson<{ products: ShopifyProduct[] }>("/api/shopify/products"),
@@ -106,6 +116,7 @@ export default function App() {
         fetchJson<{ groupId: number | null }>("/api/settings/queue-group"),
           fetchJson<{ items: UnmatchedLineItem[] }>("/api/unmatched"),
           fetchJson<{ hidden: HiddenProduct[] }>("/api/products/hidden"),
+          fetchJson<{ excluded: QueueExcludedProduct[] }>("/api/products/queue-excluded"),
       ]);
 
       const filteredProducts = productData.products
@@ -122,6 +133,9 @@ export default function App() {
       setUnmatched(unmatchedData.items);
       setHiddenProductIds(
         new Set(hiddenData.hidden.map((item) => item.shopifyProductId))
+      );
+      setQueueExcludedIds(
+        new Set(excludedData.excluded.map((item) => item.shopifyProductId))
       );
     } catch (err) {
       console.error(err);
@@ -245,6 +259,26 @@ export default function App() {
     });
   };
 
+  const excludeProductFromQueue = async (productId: string) => {
+    await fetchJson("/api/products/queue-excluded", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ productId }),
+    });
+    setQueueExcludedIds((prev: Set<string>) => new Set(prev).add(productId));
+  };
+
+  const includeProductInQueue = async (productId: string) => {
+    await fetchJson(`/api/products/queue-excluded/${productId}`, {
+      method: "DELETE",
+    });
+    setQueueExcludedIds((prev: Set<string>) => {
+      const next = new Set(prev);
+      next.delete(productId);
+      return next;
+    });
+  };
+
   return (
     <div className="app">
       <header className="app__header">
@@ -347,6 +381,7 @@ export default function App() {
             {products
               .map((product: ShopifyProduct) => {
                 const isHidden = hiddenProductIds.has(product.id);
+                const isQueueExcluded = queueExcludedIds.has(product.id);
                 if (isHidden && !showHidden) {
                   return null;
                 }
@@ -373,14 +408,28 @@ export default function App() {
                     <h2>{product.title}</h2>
                     <span className="muted">Product ID: {product.id}</span>
                   </div>
-                  <button
-                    className="btn btn--ghost"
-                    onClick={() =>
-                      isHidden ? unhideProduct(product.id) : hideProduct(product.id)
-                    }
-                  >
-                    {isHidden ? "Unhide" : "Hide"}
-                  </button>
+                  <div className="panel__header-actions">
+                    <label className="checkbox">
+                      <input
+                        type="checkbox"
+                        checked={isQueueExcluded}
+                        onChange={(event) =>
+                          event.target.checked
+                            ? excludeProductFromQueue(product.id)
+                            : includeProductInQueue(product.id)
+                        }
+                      />
+                      Skip queue
+                    </label>
+                    <button
+                      className="btn btn--ghost"
+                      onClick={() =>
+                        isHidden ? unhideProduct(product.id) : hideProduct(product.id)
+                      }
+                    >
+                      {isHidden ? "Unhide" : "Hide"}
+                    </button>
+                  </div>
                 </div>
 
                 <div className="variant-list">

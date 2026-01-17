@@ -100,6 +100,8 @@ app.post(
         ? payload.line_items
         : [];
 
+      const excludedProductIds = await getQueueExcludedProductIds();
+
       for (const item of lineItems) {
         const productId = String(item?.product_id ?? "");
         const variantId = item?.variant_id ? String(item.variant_id) : null;
@@ -107,6 +109,14 @@ app.post(
 
         if (!productId) {
           console.log("Skipped line item without product_id");
+          continue;
+        }
+
+        if (excludedProductIds.has(productId)) {
+          console.log(
+            "Skipped queueing for excluded product",
+            JSON.stringify({ productId, variantId, sku: item?.sku ?? null })
+          );
           continue;
         }
 
@@ -220,6 +230,13 @@ app.get("/api/products/hidden", async (_req: Request, res: Response) => {
   res.json({ hidden });
 });
 
+app.get("/api/products/queue-excluded", async (_req: Request, res: Response) => {
+  const excluded = await prisma.queueExcludedProduct.findMany({
+    orderBy: { createdAt: "desc" },
+  });
+  res.json({ excluded });
+});
+
 const hiddenProductSchema = z.object({
   productId: z.string().min(1),
 });
@@ -248,6 +265,41 @@ app.delete(
     }
 
     await prisma.hiddenProduct
+      .delete({ where: { shopifyProductId: productId } })
+      .catch(() => undefined);
+
+    return res.json({ status: "deleted" });
+  }
+);
+
+const queueExcludedSchema = z.object({
+  productId: z.string().min(1),
+});
+
+app.post("/api/products/queue-excluded", async (req: Request, res: Response) => {
+  try {
+    const { productId } = queueExcludedSchema.parse(req.body);
+    const record = await prisma.queueExcludedProduct.upsert({
+      where: { shopifyProductId: productId },
+      update: {},
+      create: { shopifyProductId: productId },
+    });
+    res.json({ excluded: record });
+  } catch (error) {
+    console.error("Failed to exclude product", error);
+    res.status(400).json({ error: "Invalid product id" });
+  }
+});
+
+app.delete(
+  "/api/products/queue-excluded/:productId",
+  async (req: Request, res: Response) => {
+    const productId = String(req.params.productId ?? "");
+    if (!productId) {
+      return res.status(400).json({ error: "Invalid product id" });
+    }
+
+    await prisma.queueExcludedProduct
       .delete({ where: { shopifyProductId: productId } })
       .catch(() => undefined);
 
@@ -621,6 +673,13 @@ async function recordUnmatchedLineItem(input: {
   });
 }
 
+async function getQueueExcludedProductIds() {
+  const excluded = await prisma.queueExcludedProduct.findMany({
+    select: { shopifyProductId: true },
+  });
+  return new Set(excluded.map((item) => item.shopifyProductId));
+}
+
 function normalizeMappingFiles(mapping: any): string[] {
   let files: string[] = [];
   if (typeof mapping?.simplyprintFileNames === "string") {
@@ -637,7 +696,20 @@ function normalizeMappingFiles(mapping: any): string[] {
   const legacy = mapping?.simplyprintFileName
     ? [String(mapping.simplyprintFileName)]
     : [];
-  return [...files, ...legacy].filter((name) => String(name).trim().length > 0);
+  const combined = [...files, ...legacy]
+    .map((name) => String(name).trim())
+    .filter((name) => name.length > 0);
+
+  const seen = new Set<string>();
+  const unique: string[] = [];
+  for (const name of combined) {
+    const key = name.toLowerCase();
+    if (!seen.has(key)) {
+      seen.add(key);
+      unique.push(name);
+    }
+  }
+  return unique;
 }
 
 let cachedQueueGroupId: number | null = null;
@@ -710,10 +782,23 @@ async function resolveSimplyPrintFileId(fileName: string) {
 
   const files = response.data?.files ?? [];
   const target = fileName.trim().toLowerCase();
+  const targetNormalized = normalizeText(fileName);
+  const targetNoExt = normalizeText(fileName.replace(/\.[^/.]+$/, ""));
 
   const match = files.find((file: any) => {
     const fullName = file.ext ? `${file.name}.${file.ext}` : file.name;
     return fullName.toLowerCase() === target || file.name.toLowerCase() === target;
+  }) ??
+  files.find((file: any) => {
+    const fullName = file.ext ? `${file.name}.${file.ext}` : file.name;
+    const normalizedFull = normalizeText(fullName);
+    const normalizedName = normalizeText(file.name);
+    return (
+      normalizedFull === targetNormalized ||
+      normalizedName === targetNormalized ||
+      (targetNoExt &&
+        (normalizedFull === targetNoExt || normalizedName === targetNoExt))
+    );
   });
 
   if (!match) {

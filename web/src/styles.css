@@ -111,6 +111,12 @@ body {
   margin-bottom: 16px;
 }
 
+.panel__header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
 .queue-panel {
   margin-bottom: 24px;
 }

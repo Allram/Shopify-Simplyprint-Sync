@@ -47,3 +47,9 @@ model HiddenProduct {
   shopifyProductId String   @unique
   createdAt        DateTime @default(now())
 }
+
+model QueueExcludedProduct {
+  id               Int      @id @default(autoincrement())
+  shopifyProductId String   @unique
+  createdAt        DateTime @default(now())
+}
