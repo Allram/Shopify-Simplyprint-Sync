@@ -1,0 +1,639 @@
+import React, { useCallback, useEffect, useMemo, useState } from "react";
+
+type ShopifyVariant = {
+  id: string;
+  title: string;
+  sku?: string | null;
+};
+
+type ShopifyProduct = {
+  id: string;
+  title: string;
+  variants: ShopifyVariant[];
+};
+
+type Mapping = {
+  id: number;
+  shopifyProductId: string;
+  shopifyVariantId: string | null;
+  simplyprintFileName: string;
+};
+
+type FileItem = {
+  id: string;
+  name: string;
+  ext?: string | null;
+  fullName: string;
+  score?: number;
+};
+
+type QueueGroup = {
+  id: number;
+  name: string;
+  virtual?: boolean;
+  extensions?: string[];
+  sort_order?: number;
+};
+
+type UnmatchedLineItem = {
+  id: number;
+  orderId: string;
+  orderName: string | null;
+  shopifyProductId: string;
+  shopifyVariantId: string | null;
+  sku: string | null;
+  quantity: number;
+  reason: string | null;
+  queuedAt: string | null;
+  createdAt: string;
+};
+
+const fetchJson = async <T,>(input: RequestInfo, init?: RequestInit) => {
+  const response = await fetch(input, init);
+  if (!response.ok) {
+    throw new Error(`Request failed: ${response.status}`);
+  }
+  return (await response.json()) as T;
+};
+
+export default function App() {
+  const [products, setProducts] = useState<ShopifyProduct[]>([]);
+  const [mappings, setMappings] = useState<Mapping[]>([]);
+  const [queueGroups, setQueueGroups] = useState<QueueGroup[]>([]);
+  const [queueGroupId, setQueueGroupId] = useState<number | null>(null);
+  const [queueSaving, setQueueSaving] = useState(false);
+  const [unmatched, setUnmatched] = useState<UnmatchedLineItem[]>([]);
+  const [activeTab, setActiveTab] = useState<"mappings" | "unmatched">(
+    "mappings"
+  );
+  const [mappingFilter, setMappingFilter] = useState<
+    "all" | "mapped" | "unmapped"
+  >("all");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [darkMode, setDarkMode] = useState(
+    () => window.localStorage.getItem("theme") === "dark"
+  );
+
+  const loadData = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+
+    try {
+      const [productData, mappingData, groupData, queueSetting, unmatchedData] =
+        await Promise.all([
+        fetchJson<{ products: ShopifyProduct[] }>("/api/shopify/products"),
+        fetchJson<{ mappings: Mapping[] }>("/api/mappings"),
+        fetchJson<{ groups: QueueGroup[] }>("/api/simplyprint/queue-groups"),
+        fetchJson<{ groupId: number | null }>("/api/settings/queue-group"),
+          fetchJson<{ items: UnmatchedLineItem[] }>("/api/unmatched"),
+      ]);
+
+      const filteredProducts = productData.products
+        .map((product) => ({
+          ...product,
+          variants: product.variants.filter((variant) => !!variant.sku),
+        }))
+        .filter((product) => product.variants.length > 0);
+
+      setProducts(filteredProducts);
+      setMappings(mappingData.mappings);
+      setQueueGroups(groupData.groups);
+      setQueueGroupId(queueSetting.groupId ?? null);
+      setUnmatched(unmatchedData.items);
+    } catch (err) {
+      console.error(err);
+      setError("Failed to load data. Check server configuration.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
+
+  useEffect(() => {
+    document.body.classList.toggle("theme-dark", darkMode);
+    window.localStorage.setItem("theme", darkMode ? "dark" : "light");
+  }, [darkMode]);
+
+  const mappingFor = useCallback(
+    (productId: string, variantId: string | null) =>
+      mappings.find(
+        (mapping: Mapping) =>
+          mapping.shopifyProductId === productId &&
+          mapping.shopifyVariantId === variantId
+      ) ?? null,
+    [mappings]
+  );
+
+  const upsertMapping = async (
+    productId: string,
+    variantId: string | null,
+    fileName: string
+  ) => {
+    const payload = {
+      productId,
+      variantId,
+      fileName,
+    };
+
+    const result = await fetchJson<{ mapping: Mapping }>("/api/mappings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+    setMappings((prev: Mapping[]) => {
+      const index = prev.findIndex(
+        (mapping: Mapping) => mapping.id === result.mapping.id
+      );
+      if (index >= 0) {
+        const next = [...prev];
+        next[index] = result.mapping;
+        return next;
+      }
+      return [result.mapping, ...prev];
+    });
+  };
+
+  const deleteMapping = async (id: number) => {
+    await fetchJson(`/api/mappings/${id}`, { method: "DELETE" });
+    setMappings((prev: Mapping[]) =>
+      prev.filter((mapping: Mapping) => mapping.id !== id)
+    );
+  };
+
+  const saveQueueGroup = async () => {
+    setQueueSaving(true);
+    try {
+      await fetchJson("/api/settings/queue-group", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ groupId: queueGroupId }),
+      });
+    } finally {
+      setQueueSaving(false);
+    }
+  };
+
+  const queueUnmatched = async (
+    itemId: number,
+    fileName: string,
+    saveMapping: boolean
+  ) => {
+    await fetchJson(`/api/unmatched/${itemId}/queue`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fileName, saveMapping }),
+    });
+
+    setUnmatched((prev: UnmatchedLineItem[]) =>
+      prev.map((item: UnmatchedLineItem) =>
+        item.id === itemId
+          ? { ...item, queuedAt: new Date().toISOString(), reason: "Queued manually" }
+          : item
+      )
+    );
+  };
+
+  const deleteUnmatched = async (itemId: number) => {
+    await fetchJson(`/api/unmatched/${itemId}`, { method: "DELETE" });
+    setUnmatched((prev: UnmatchedLineItem[]) =>
+      prev.filter((item: UnmatchedLineItem) => item.id !== itemId)
+    );
+  };
+
+  return (
+    <div className="app">
+      <header className="app__header">
+        <div>
+          <h1>Shopify → SimplyPrint Sync</h1>
+          <p>
+            Map Shopify products and variants to SimplyPrint files. Orders will be
+            queued automatically in the Shopify queue group.
+          </p>
+        </div>
+        <div className="app__header-actions">
+          <button
+            className="btn btn--ghost"
+            onClick={() => setDarkMode((prev: boolean) => !prev)}
+          >
+            {darkMode ? "Light mode" : "Dark mode"}
+          </button>
+          <button className="btn" onClick={loadData} disabled={loading}>
+            Refresh
+          </button>
+        </div>
+      </header>
+
+      <div className="tab-bar">
+        <button
+          className={`tab ${activeTab === "mappings" ? "tab--active" : ""}`}
+          onClick={() => setActiveTab("mappings")}
+        >
+          Mappings
+        </button>
+        <button
+          className={`tab ${activeTab === "unmatched" ? "tab--active" : ""}`}
+          onClick={() => setActiveTab("unmatched")}
+        >
+          Unmatched Orders
+        </button>
+      </div>
+
+      {error && <div className="banner banner--error">{error}</div>}
+      {loading ? (
+        <div className="panel">Loading products…</div>
+      ) : activeTab === "mappings" ? (
+        <>
+          <div className="panel queue-panel">
+            <div className="queue-settings">
+              <div>
+                <h3>SimplyPrint queue</h3>
+                <p className="muted">
+                  Select the queue group used when orders are created.
+                </p>
+              </div>
+              <div className="queue-settings__actions">
+                <select
+                  value={queueGroupId ?? ""}
+                  onChange={(event) =>
+                    setQueueGroupId(
+                      event.target.value ? Number(event.target.value) : null
+                    )
+                  }
+                >
+                  <option value="">Default (Shopify)</option>
+                  {queueGroups.map((group) => (
+                    <option key={group.id} value={group.id}>
+                      {group.name}
+                    </option>
+                  ))}
+                </select>
+                <button className="btn" onClick={saveQueueGroup} disabled={queueSaving}>
+                  Save
+                </button>
+              </div>
+            </div>
+            <div className="mapping-filters">
+              <label className="muted" htmlFor="mappingFilter">
+                Filter variants:
+              </label>
+              <select
+                id="mappingFilter"
+                value={mappingFilter}
+                onChange={(event) =>
+                  setMappingFilter(event.target.value as "all" | "mapped" | "unmapped")
+                }
+              >
+                <option value="all">All</option>
+                <option value="unmapped">Unmatched only</option>
+                <option value="mapped">Matched only</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="product-grid">
+            {products
+              .map((product: ShopifyProduct) => {
+                const visibleVariants = product.variants.filter((variant) => {
+                  const hasMapping = !!mappingFor(product.id, variant.id);
+                  if (mappingFilter === "mapped") {
+                    return hasMapping;
+                  }
+                  if (mappingFilter === "unmapped") {
+                    return !hasMapping;
+                  }
+                  return true;
+                });
+
+                if (visibleVariants.length === 0) {
+                  return null;
+                }
+
+                return (
+                  <div key={product.id} className="panel">
+                <div className="panel__header">
+                  <div>
+                    <h2>{product.title}</h2>
+                    <span className="muted">Product ID: {product.id}</span>
+                  </div>
+                </div>
+
+                <div className="variant-list">
+                  {visibleVariants.map((variant: ShopifyVariant) => (
+                    <MappingRow
+                      key={variant.id}
+                      label={variant.title}
+                      subtitle={
+                        variant.sku
+                          ? `SKU: ${variant.sku} • Variant ID: ${variant.id}`
+                          : `Variant ID: ${variant.id}`
+                      }
+                      productId={product.id}
+                      variantId={variant.id}
+                      current={mappingFor(product.id, variant.id)}
+                      suggestQuery={
+                        variant.sku ?? `${product.title} ${variant.title}`
+                      }
+                      onSave={upsertMapping}
+                      onDelete={deleteMapping}
+                    />
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+          </div>
+        </>
+      ) : (
+        <div className="panel">
+          {unmatched.length === 0 ? (
+            <div className="muted">No unmatched orders.</div>
+          ) : (
+            <div className="unmatched-list">
+              {unmatched.map((item) => (
+                <UnmatchedRow
+                  key={item.id}
+                  item={item}
+                  onQueue={queueUnmatched}
+                  onDelete={deleteUnmatched}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+type MappingRowProps = {
+  label: string;
+  subtitle?: string;
+  productId: string;
+  variantId: string | null;
+  current: Mapping | null;
+  suggestQuery?: string;
+  onSave: (productId: string, variantId: string | null, fileName: string) => void;
+  onDelete: (id: number) => void;
+};
+
+function MappingRow({
+  label,
+  subtitle,
+  productId,
+  variantId,
+  current,
+  suggestQuery,
+  onSave,
+  onDelete,
+}: MappingRowProps) {
+  const [fileName, setFileName] = useState(current?.simplyprintFileName ?? "");
+  const [saving, setSaving] = useState(false);
+  const [files, setFiles] = useState<FileItem[]>([]);
+  const [suggestMessage, setSuggestMessage] = useState<string | null>(null);
+  const [suggested, setSuggested] = useState<FileItem[]>([]);
+  const [selectedSuggestion, setSelectedSuggestion] = useState<string>("");
+
+  useEffect(() => {
+    setFileName(current?.simplyprintFileName ?? "");
+  }, [current?.simplyprintFileName]);
+
+  useEffect(() => {
+    if (!fileName.trim()) {
+      setFiles([]);
+      return;
+    }
+
+    const handle = window.setTimeout(async () => {
+      try {
+        const result = await fetchJson<{ files: FileItem[] }>(
+          `/api/simplyprint/files?search=${encodeURIComponent(fileName.trim())}`
+        );
+        setFiles(result.files.slice(0, 8));
+      } catch (error) {
+        console.error(error);
+      }
+    }, 300);
+
+    return () => window.clearTimeout(handle);
+  }, [fileName]);
+
+  useEffect(() => {
+    if (selectedSuggestion) {
+      setFileName(selectedSuggestion);
+    }
+  }, [selectedSuggestion]);
+
+  const options = useMemo(
+    () => files.map((file: FileItem) => file.fullName),
+    [files]
+  );
+
+  const handleSave = async () => {
+    if (!fileName.trim()) {
+      return;
+    }
+
+    setSaving(true);
+    try {
+      await onSave(productId, variantId, fileName.trim());
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!current) {
+      return;
+    }
+
+    setSaving(true);
+    try {
+      await onDelete(current.id);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleSuggest = async () => {
+    const query = (suggestQuery ?? fileName).trim();
+    if (!query) {
+      return;
+    }
+
+    setSaving(true);
+    setSuggestMessage(null);
+    try {
+      const result = await fetchJson<{ files: FileItem[] }>(
+        `/api/simplyprint/suggest?query=${encodeURIComponent(query)}`
+      );
+      setFiles(result.files.slice(0, 8));
+      setSuggested(result.files.slice(0, 3));
+      setSelectedSuggestion(result.files[0]?.fullName ?? "");
+      if (result.files.length > 0) {
+        setFileName(result.files[0].fullName);
+      } else {
+        setSuggestMessage("No matching files found.");
+      }
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="mapping-row">
+      <div>
+        <div className="mapping-row__title">{label}</div>
+        {subtitle && <div className="muted">{subtitle}</div>}
+      </div>
+      <div className="mapping-row__actions">
+        <input
+          list={`files-${productId}-${variantId ?? "product"}`}
+          value={fileName}
+          onChange={(event) => setFileName(event.target.value)}
+          placeholder="SimplyPrint filename (e.g. Widget.gcode)"
+        />
+        <datalist id={`files-${productId}-${variantId ?? "product"}`}>
+          {options.map((option: string) => (
+            <option key={option} value={option} />
+          ))}
+        </datalist>
+        <button className="btn btn--ghost" onClick={handleSuggest} disabled={saving}>
+          Suggest
+        </button>
+        <button className="btn" onClick={handleSave} disabled={saving}>
+          {current ? "Update" : "Save"}
+        </button>
+        <button
+          className="btn btn--ghost"
+          onClick={handleDelete}
+          disabled={!current || saving}
+        >
+          Clear
+        </button>
+      </div>
+      {suggested.length > 0 && (
+        <div className="suggest-panel">
+          <label className="muted" htmlFor={`suggest-${productId}-${variantId}`}>
+            Suggested matches
+          </label>
+          <select
+            id={`suggest-${productId}-${variantId}`}
+            value={selectedSuggestion}
+            onChange={(event) => setSelectedSuggestion(event.target.value)}
+          >
+            {suggested.map((option) => (
+              <option key={option.id} value={option.fullName}>
+                {option.fullName}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+      {suggestMessage && <div className="muted">{suggestMessage}</div>}
+      {current && (
+        <div className="mapping-row__current muted">
+          Current: {current.simplyprintFileName}
+        </div>
+      )}
+    </div>
+  );
+}
+
+type UnmatchedRowProps = {
+  item: UnmatchedLineItem;
+  onQueue: (itemId: number, fileName: string, saveMapping: boolean) => void;
+  onDelete: (itemId: number) => void;
+};
+
+function UnmatchedRow({ item, onQueue, onDelete }: UnmatchedRowProps) {
+  const [fileName, setFileName] = useState("");
+  const [saveMapping, setSaveMapping] = useState(true);
+  const [suggested, setSuggested] = useState<FileItem[]>([]);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    const query = item.sku ?? "";
+    if (!query) {
+      setSuggested([]);
+      return;
+    }
+
+    const handle = window.setTimeout(async () => {
+      try {
+        const result = await fetchJson<{ files: FileItem[] }>(
+          `/api/simplyprint/suggest?query=${encodeURIComponent(query)}`
+        );
+        setSuggested(result.files.slice(0, 5));
+      } catch (error) {
+        console.error(error);
+      }
+    }, 300);
+
+    return () => window.clearTimeout(handle);
+  }, [item.sku]);
+
+  const handleQueue = async () => {
+    if (!fileName.trim()) {
+      return;
+    }
+    setSaving(true);
+    try {
+      await onQueue(item.id, fileName.trim(), saveMapping);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="unmatched-row">
+      <div className="unmatched-row__info">
+        <div className="unmatched-row__title">
+          Order {item.orderName ?? item.orderId}
+        </div>
+        <div className="muted">
+          Product {item.shopifyProductId}
+          {item.shopifyVariantId ? ` • Variant ${item.shopifyVariantId}` : ""}
+          {item.sku ? ` • SKU ${item.sku}` : ""} • Qty {item.quantity}
+        </div>
+        {item.reason && <div className="muted">Reason: {item.reason}</div>}
+        {item.queuedAt && <div className="muted">Queued at: {item.queuedAt}</div>}
+      </div>
+      <div className="unmatched-row__actions">
+        <input
+          list={`unmatched-files-${item.id}`}
+          value={fileName}
+          onChange={(event) => setFileName(event.target.value)}
+          placeholder="SimplyPrint filename"
+        />
+        <datalist id={`unmatched-files-${item.id}`}>
+          {suggested.map((file) => (
+            <option key={file.id} value={file.fullName} />
+          ))}
+        </datalist>
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={saveMapping}
+            onChange={(event) => setSaveMapping(event.target.checked)}
+          />
+          Save mapping
+        </label>
+        <button className="btn" onClick={handleQueue} disabled={saving}>
+          Queue
+        </button>
+        <button
+          className="btn btn--ghost"
+          onClick={() => onDelete(item.id)}
+          disabled={saving}
+        >
+          Dismiss
+        </button>
+      </div>
+    </div>
+  );
+}
