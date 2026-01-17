@@ -216,7 +216,8 @@ app.post(
 
 app.use(express.json());
 
-app.get("/api/health", (_req: Request, res: Response) => {
+app.get("/api/health", async (_req: Request, res: Response) => {
+  await getRedisClient();
   res.json({ status: "ok", redis: redisStatus });
 });
 
