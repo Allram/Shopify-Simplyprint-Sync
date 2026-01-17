@@ -770,20 +770,25 @@ async function addToSimplyPrintQueue(fileName: string, amount: number) {
 }
 
 async function resolveSimplyPrintFileId(fileName: string) {
-  const response = await axios.get(`${simplyPrintBaseUrl()}/files/GetFiles`, {
-    headers: {
-      "X-API-KEY": SIMPLYPRINT_API_KEY,
-    },
-    params: {
-      search: fileName,
-      global_search: true,
-    },
-  });
+  const fetchFiles = async (search: string) => {
+    const response = await axios.get(`${simplyPrintBaseUrl()}/files/GetFiles`, {
+      headers: {
+        "X-API-KEY": SIMPLYPRINT_API_KEY,
+      },
+      params: {
+        search,
+        global_search: true,
+      },
+    });
 
-  const files = response.data?.files ?? [];
+    return response.data?.files ?? [];
+  };
+
+  const files = await fetchFiles(fileName);
   const target = fileName.trim().toLowerCase();
   const targetNormalized = normalizeText(fileName);
   const targetNoExt = normalizeText(fileName.replace(/\.[^/.]+$/, ""));
+  const targetCompact = targetNormalized.replace(/\s+/g, "");
 
   const match = files.find((file: any) => {
     const fullName = file.ext ? `${file.name}.${file.ext}` : file.name;
@@ -793,19 +798,58 @@ async function resolveSimplyPrintFileId(fileName: string) {
     const fullName = file.ext ? `${file.name}.${file.ext}` : file.name;
     const normalizedFull = normalizeText(fullName);
     const normalizedName = normalizeText(file.name);
+    const compactFull = normalizedFull.replace(/\s+/g, "");
+    const compactName = normalizedName.replace(/\s+/g, "");
     return (
       normalizedFull === targetNormalized ||
       normalizedName === targetNormalized ||
       (targetNoExt &&
-        (normalizedFull === targetNoExt || normalizedName === targetNoExt))
+        (normalizedFull === targetNoExt || normalizedName === targetNoExt)) ||
+      (targetCompact && (compactFull === targetCompact || compactName === targetCompact))
     );
   });
 
   if (!match) {
-    throw new Error(`SimplyPrint file not found: ${fileName}`);
+    const tokens = Array.from(
+      new Set(
+        normalizeText(fileName)
+          .split(" ")
+          .filter((token) => token.length > 2)
+          .slice(0, 3)
+      )
+    );
+
+    if (tokens.length > 0) {
+      const extraResponses = await Promise.all(tokens.map((token) => fetchFiles(token)));
+      const extraFiles = extraResponses.flat();
+      const allFiles = [...files, ...extraFiles];
+
+      const fallback = allFiles.find((file: any) => {
+        const fullName = file.ext ? `${file.name}.${file.ext}` : file.name;
+        const normalizedFull = normalizeText(fullName);
+        const normalizedName = normalizeText(file.name);
+        const compactFull = normalizedFull.replace(/\s+/g, "");
+        const compactName = normalizedName.replace(/\s+/g, "");
+        return (
+          normalizedFull === targetNormalized ||
+          normalizedName === targetNormalized ||
+          (targetNoExt &&
+            (normalizedFull === targetNoExt || normalizedName === targetNoExt)) ||
+          (targetCompact && (compactFull === targetCompact || compactName === targetCompact))
+        );
+      });
+
+      if (fallback) {
+        return fallback.id;
+      }
+    }
+  } else {
+    return match.id;
   }
 
-  return match.id;
+  if (!match) {
+    throw new Error(`SimplyPrint file not found: ${fileName}`);
+  }
 }
 
 function normalizeText(value: string) {
