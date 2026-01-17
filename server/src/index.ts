@@ -9,7 +9,6 @@ import axios from "axios";
 import { PrismaClient } from "@prisma/client";
 import { z } from "zod";
 import { createClient } from "redis";
-import type { RedisClientType } from "redis";
 
 dotenv.config();
 
@@ -869,7 +868,8 @@ let cachedQueueDryRunAt = 0;
 let simplyPrintLastRequestAt = 0;
 let simplyPrintRequestChain: Promise<unknown> = Promise.resolve();
 
-let redisClientPromise: Promise<RedisClientType> | null = null;
+type RedisClient = ReturnType<typeof createClient>;
+let redisClientPromise: Promise<RedisClient> | null = null;
 
 async function getQueueGroupId() {
   if (cachedQueueGroupId !== null && Date.now() - cachedQueueGroupAt < 5 * 60_000) {
@@ -943,7 +943,7 @@ async function withSimplyPrintRateLimit<T>(fn: () => Promise<T>) {
   return simplyPrintRequestChain as Promise<T>;
 }
 
-async function getRedisClient(): Promise<RedisClientType | null> {
+async function getRedisClient(): Promise<RedisClient | null> {
   const hasRedisConfig =
     !!REDIS_URL ||
     !!REDIS_HOST ||
