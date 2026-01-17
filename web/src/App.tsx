@@ -49,9 +49,28 @@ type UnmatchedLineItem = {
   createdAt: string;
 };
 
+type MatchedLineItem = {
+  id: number;
+  orderId: string;
+  orderName: string | null;
+  shopifyProductId: string;
+  shopifyVariantId: string | null;
+  sku: string | null;
+  quantity: number;
+  fileName: string;
+  queuedAt: string;
+};
+
 type HiddenProduct = {
   id: number;
   shopifyProductId: string;
+  createdAt: string;
+};
+
+type HiddenVariant = {
+  id: number;
+  shopifyProductId: string;
+  shopifyVariantId: string;
   createdAt: string;
 };
 
@@ -76,16 +95,21 @@ export default function App() {
   const [queueGroupId, setQueueGroupId] = useState<number | null>(null);
   const [queueSaving, setQueueSaving] = useState(false);
   const [unmatched, setUnmatched] = useState<UnmatchedLineItem[]>([]);
-  const [activeTab, setActiveTab] = useState<"mappings" | "unmatched">(
-    "mappings"
-  );
+  const [matched, setMatched] = useState<MatchedLineItem[]>([]);
+  const [activeTab, setActiveTab] = useState<
+    "mappings" | "unmatched" | "matched"
+  >("mappings");
   const [mappingFilter, setMappingFilter] = useState<
     "all" | "mapped" | "unmapped"
   >("all");
+  const [showSkipQueueOnly, setShowSkipQueueOnly] = useState(false);
   const [hiddenProductIds, setHiddenProductIds] = useState<Set<string>>(
     () => new Set()
   );
   const [queueExcludedIds, setQueueExcludedIds] = useState<Set<string>>(
+    () => new Set()
+  );
+  const [hiddenVariantKeys, setHiddenVariantKeys] = useState<Set<string>>(
     () => new Set()
   );
   const [showHidden, setShowHidden] = useState(false);
@@ -108,6 +132,8 @@ export default function App() {
         unmatchedData,
         hiddenData,
         excludedData,
+        matchedData,
+        hiddenVariantsData,
       ] =
         await Promise.all([
         fetchJson<{ products: ShopifyProduct[] }>("/api/shopify/products"),
@@ -117,6 +143,8 @@ export default function App() {
           fetchJson<{ items: UnmatchedLineItem[] }>("/api/unmatched"),
           fetchJson<{ hidden: HiddenProduct[] }>("/api/products/hidden"),
           fetchJson<{ excluded: QueueExcludedProduct[] }>("/api/products/queue-excluded"),
+          fetchJson<{ items: MatchedLineItem[] }>("/api/matched"),
+          fetchJson<{ hidden: HiddenVariant[] }>("/api/variants/hidden"),
       ]);
 
       const filteredProducts = productData.products
@@ -136,6 +164,14 @@ export default function App() {
       );
       setQueueExcludedIds(
         new Set(excludedData.excluded.map((item) => item.shopifyProductId))
+      );
+      setMatched(matchedData.items);
+      setHiddenVariantKeys(
+        new Set(
+          hiddenVariantsData.hidden.map(
+            (item) => `${item.shopifyProductId}:${item.shopifyVariantId}`
+          )
+        )
       );
     } catch (err) {
       console.error(err);
@@ -219,19 +255,21 @@ export default function App() {
     fileName: string,
     saveMapping: boolean
   ) => {
-    await fetchJson(`/api/unmatched/${itemId}/queue`, {
+    const result = await fetchJson<{ matched?: MatchedLineItem }>(
+      `/api/unmatched/${itemId}/queue`,
+      {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ fileName, saveMapping }),
-    });
+      }
+    );
 
     setUnmatched((prev: UnmatchedLineItem[]) =>
-      prev.map((item: UnmatchedLineItem) =>
-        item.id === itemId
-          ? { ...item, queuedAt: new Date().toISOString(), reason: "Queued manually" }
-          : item
-      )
+      prev.filter((item: UnmatchedLineItem) => item.id !== itemId)
     );
+    if (result.matched) {
+      setMatched((prev: MatchedLineItem[]) => [result.matched!, ...prev]);
+    }
   };
 
   const deleteUnmatched = async (itemId: number) => {
@@ -279,6 +317,28 @@ export default function App() {
     });
   };
 
+  const hideVariant = async (productId: string, variantId: string) => {
+    await fetchJson("/api/variants/hidden", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ productId, variantId }),
+    });
+    setHiddenVariantKeys(
+      (prev: Set<string>) => new Set(prev).add(`${productId}:${variantId}`)
+    );
+  };
+
+  const unhideVariant = async (productId: string, variantId: string) => {
+    await fetchJson(`/api/variants/hidden/${productId}/${variantId}`, {
+      method: "DELETE",
+    });
+    setHiddenVariantKeys((prev: Set<string>) => {
+      const next = new Set(prev);
+      next.delete(`${productId}:${variantId}`);
+      return next;
+    });
+  };
+
   return (
     <div className="app">
       <header className="app__header">
@@ -314,6 +374,12 @@ export default function App() {
           onClick={() => setActiveTab("unmatched")}
         >
           Unmatched Orders
+        </button>
+        <button
+          className={`tab ${activeTab === "matched" ? "tab--active" : ""}`}
+          onClick={() => setActiveTab("matched")}
+        >
+          Matched Orders
         </button>
       </div>
 
@@ -369,6 +435,14 @@ export default function App() {
               <label className="checkbox">
                 <input
                   type="checkbox"
+                  checked={showSkipQueueOnly}
+                  onChange={(event) => setShowSkipQueueOnly(event.target.checked)}
+                />
+                Skip queue only
+              </label>
+              <label className="checkbox">
+                <input
+                  type="checkbox"
                   checked={showHidden}
                   onChange={(event) => setShowHidden(event.target.checked)}
                 />
@@ -386,7 +460,17 @@ export default function App() {
                   return null;
                 }
 
+                if (showSkipQueueOnly && !isQueueExcluded) {
+                  return null;
+                }
+
                 const visibleVariants = product.variants.filter((variant) => {
+                  const isVariantHidden = hiddenVariantKeys.has(
+                    `${product.id}:${variant.id}`
+                  );
+                  if (isVariantHidden && !showHidden) {
+                    return false;
+                  }
                   const hasMapping = !!mappingFor(product.id, variant.id);
                   if (mappingFilter === "mapped") {
                     return hasMapping;
@@ -444,6 +528,14 @@ export default function App() {
                       }
                       productId={product.id}
                       variantId={variant.id}
+                      isHidden={hiddenVariantKeys.has(
+                        `${product.id}:${variant.id}`
+                      )}
+                      onToggleHidden={(shouldHide) =>
+                        shouldHide
+                          ? hideVariant(product.id, variant.id)
+                          : unhideVariant(product.id, variant.id)
+                      }
                       current={mappingFor(product.id, variant.id)}
                       suggestQuery={
                         variant.sku ?? `${product.title} ${variant.title}`
@@ -458,7 +550,7 @@ export default function App() {
           })}
           </div>
         </>
-      ) : (
+      ) : activeTab === "unmatched" ? (
         <div className="panel">
           {unmatched.length === 0 ? (
             <div className="muted">No unmatched orders.</div>
@@ -475,6 +567,18 @@ export default function App() {
             </div>
           )}
         </div>
+      ) : (
+        <div className="panel">
+          {matched.length === 0 ? (
+            <div className="muted">No matched orders yet.</div>
+          ) : (
+            <div className="unmatched-list">
+              {matched.map((item) => (
+                <MatchedRow key={item.id} item={item} />
+              ))}
+            </div>
+          )}
+        </div>
       )}
     </div>
   );
@@ -485,6 +589,8 @@ type MappingRowProps = {
   subtitle?: string;
   productId: string;
   variantId: string | null;
+  isHidden: boolean;
+  onToggleHidden: (shouldHide: boolean) => void;
   current: Mapping | null;
   suggestQuery?: string;
   onSave: (
@@ -500,6 +606,8 @@ function MappingRow({
   subtitle,
   productId,
   variantId,
+  isHidden,
+  onToggleHidden,
   current,
   suggestQuery,
   onSave,
@@ -632,6 +740,14 @@ function MappingRow({
       <div>
         <div className="mapping-row__title">{label}</div>
         {subtitle && <div className="muted">{subtitle}</div>}
+        <label className="checkbox checkbox--inline">
+          <input
+            type="checkbox"
+            checked={isHidden}
+            onChange={(event) => onToggleHidden(event.target.checked)}
+          />
+          Hide variant
+        </label>
       </div>
       <div className="mapping-row__actions">
         <div className="mapping-row__files">
@@ -820,6 +936,29 @@ function UnmatchedRow({ item, onQueue, onDelete }: UnmatchedRowProps) {
         >
           Dismiss
         </button>
+      </div>
+    </div>
+  );
+}
+
+type MatchedRowProps = {
+  item: MatchedLineItem;
+};
+
+function MatchedRow({ item }: MatchedRowProps) {
+  return (
+    <div className="unmatched-row">
+      <div className="unmatched-row__info">
+        <div className="unmatched-row__title">
+          Order {item.orderName ?? item.orderId}
+        </div>
+        <div className="muted">
+          Product {item.shopifyProductId}
+          {item.shopifyVariantId ? ` • Variant ${item.shopifyVariantId}` : ""}
+          {item.sku ? ` • SKU ${item.sku}` : ""} • Qty {item.quantity}
+        </div>
+        <div className="muted">File: {item.fileName}</div>
+        <div className="muted">Queued at: {item.queuedAt}</div>
       </div>
     </div>
   );

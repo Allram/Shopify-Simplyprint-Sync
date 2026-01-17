@@ -274,6 +274,10 @@ body {
   color: var(--muted);
 }
 
+.checkbox--inline {
+  margin-top: 6px;
+}
+
 .btn {
   border: none;
   background: var(--btn-primary);

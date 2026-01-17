@@ -101,6 +101,7 @@ app.post(
         : [];
 
       const excludedProductIds = await getQueueExcludedProductIds();
+      const hiddenVariantKeys = await getHiddenVariantKeys();
 
       for (const item of lineItems) {
         const productId = String(item?.product_id ?? "");
@@ -115,6 +116,14 @@ app.post(
         if (excludedProductIds.has(productId)) {
           console.log(
             "Skipped queueing for excluded product",
+            JSON.stringify({ productId, variantId, sku: item?.sku ?? null })
+          );
+          continue;
+        }
+
+        if (variantId && hiddenVariantKeys.has(`${productId}:${variantId}`)) {
+          console.log(
+            "Skipped queueing for hidden variant",
             JSON.stringify({ productId, variantId, sku: item?.sku ?? null })
           );
           continue;
@@ -154,6 +163,20 @@ app.post(
           );
           try {
             await addToSimplyPrintQueue(fileName, quantity);
+            if (orderId) {
+              await prisma.matchedLineItem.create({
+                data: {
+                  orderId,
+                  orderName,
+                  shopifyProductId: productId,
+                  shopifyVariantId: variantId,
+                  sku: item?.sku ? String(item.sku) : null,
+                  quantity,
+                  fileName,
+                  queuedAt: new Date(),
+                },
+              });
+            }
           } catch (error) {
             console.error("Failed to queue file", error);
             if (orderId) {
@@ -230,6 +253,13 @@ app.get("/api/products/hidden", async (_req: Request, res: Response) => {
   res.json({ hidden });
 });
 
+app.get("/api/variants/hidden", async (_req: Request, res: Response) => {
+  const hidden = await prisma.hiddenVariant.findMany({
+    orderBy: { createdAt: "desc" },
+  });
+  res.json({ hidden });
+});
+
 app.get("/api/products/queue-excluded", async (_req: Request, res: Response) => {
   const excluded = await prisma.queueExcludedProduct.findMany({
     orderBy: { createdAt: "desc" },
@@ -239,6 +269,11 @@ app.get("/api/products/queue-excluded", async (_req: Request, res: Response) => 
 
 const hiddenProductSchema = z.object({
   productId: z.string().min(1),
+});
+
+const hiddenVariantSchema = z.object({
+  productId: z.string().min(1),
+  variantId: z.string().min(1),
 });
 
 app.post("/api/products/hidden", async (req: Request, res: Response) => {
@@ -266,6 +301,50 @@ app.delete(
 
     await prisma.hiddenProduct
       .delete({ where: { shopifyProductId: productId } })
+      .catch(() => undefined);
+
+    return res.json({ status: "deleted" });
+  }
+);
+
+app.post("/api/variants/hidden", async (req: Request, res: Response) => {
+  try {
+    const { productId, variantId } = hiddenVariantSchema.parse(req.body);
+    const record = await prisma.hiddenVariant.upsert({
+      where: {
+        shopifyProductId_shopifyVariantId: {
+          shopifyProductId: productId,
+          shopifyVariantId: variantId,
+        },
+      },
+      update: {},
+      create: { shopifyProductId: productId, shopifyVariantId: variantId },
+    });
+    res.json({ hidden: record });
+  } catch (error) {
+    console.error("Failed to hide variant", error);
+    res.status(400).json({ error: "Invalid variant payload" });
+  }
+});
+
+app.delete(
+  "/api/variants/hidden/:productId/:variantId",
+  async (req: Request, res: Response) => {
+    const productId = String(req.params.productId ?? "");
+    const variantId = String(req.params.variantId ?? "");
+    if (!productId || !variantId) {
+      return res.status(400).json({ error: "Invalid variant id" });
+    }
+
+    await prisma.hiddenVariant
+      .delete({
+        where: {
+          shopifyProductId_shopifyVariantId: {
+            shopifyProductId: productId,
+            shopifyVariantId: variantId,
+          },
+        },
+      })
       .catch(() => undefined);
 
     return res.json({ status: "deleted" });
@@ -493,6 +572,13 @@ app.get("/api/unmatched", async (_req: Request, res: Response) => {
   res.json({ items });
 });
 
+app.get("/api/matched", async (_req: Request, res: Response) => {
+  const items = await prisma.matchedLineItem.findMany({
+    orderBy: { queuedAt: "desc" },
+  });
+  res.json({ items });
+});
+
 const unmatchedQueueSchema = z.object({
   fileName: z.string().min(1),
   saveMapping: z.boolean().optional().default(false),
@@ -540,12 +626,21 @@ app.post("/api/unmatched/:id/queue", async (req: Request, res: Response) => {
     }
 
     await addToSimplyPrintQueue(payload.fileName, item.quantity);
-    await prisma.unmatchedLineItem.update({
-      where: { id },
-      data: { queuedAt: new Date(), reason: "Queued manually" },
+    const matched = await prisma.matchedLineItem.create({
+      data: {
+        orderId: item.orderId,
+        orderName: item.orderName,
+        shopifyProductId: item.shopifyProductId,
+        shopifyVariantId: item.shopifyVariantId,
+        sku: item.sku,
+        quantity: item.quantity,
+        fileName: payload.fileName,
+        queuedAt: new Date(),
+      },
     });
+    await prisma.unmatchedLineItem.delete({ where: { id } });
 
-    res.json({ status: "queued" });
+    res.json({ status: "queued", matched });
   } catch (error) {
     console.error("Failed to queue unmatched item", error);
     res.status(400).json({ error: "Failed to queue unmatched item" });
@@ -678,6 +773,15 @@ async function getQueueExcludedProductIds() {
     select: { shopifyProductId: true },
   });
   return new Set(excluded.map((item) => item.shopifyProductId));
+}
+
+async function getHiddenVariantKeys() {
+  const hidden = await prisma.hiddenVariant.findMany({
+    select: { shopifyProductId: true, shopifyVariantId: true },
+  });
+  return new Set(
+    hidden.map((item) => `${item.shopifyProductId}:${item.shopifyVariantId}`)
+  );
 }
 
 function normalizeMappingFiles(mapping: any): string[] {
