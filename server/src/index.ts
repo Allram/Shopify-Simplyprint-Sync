@@ -9,6 +9,7 @@ import axios from "axios";
 import { PrismaClient } from "@prisma/client";
 import { z } from "zod";
 import { createClient } from "redis";
+import type { RedisClientType } from "redis";
 
 dotenv.config();
 
@@ -868,10 +869,7 @@ let cachedQueueDryRunAt = 0;
 let simplyPrintLastRequestAt = 0;
 let simplyPrintRequestChain: Promise<unknown> = Promise.resolve();
 
-let redisClientPromise:
-  | ReturnType<typeof createClient>
-  | null
-  | Promise<ReturnType<typeof createClient>> = null;
+let redisClientPromise: Promise<RedisClientType> | null = null;
 
 async function getQueueGroupId() {
   if (cachedQueueGroupId !== null && Date.now() - cachedQueueGroupAt < 5 * 60_000) {
@@ -945,7 +943,7 @@ async function withSimplyPrintRateLimit<T>(fn: () => Promise<T>) {
   return simplyPrintRequestChain as Promise<T>;
 }
 
-async function getRedisClient() {
+async function getRedisClient(): Promise<RedisClientType | null> {
   const hasRedisConfig =
     !!REDIS_URL ||
     !!REDIS_HOST ||
@@ -958,7 +956,7 @@ async function getRedisClient() {
   }
 
   if (redisClientPromise) {
-    return redisClientPromise as ReturnType<typeof createClient>;
+    return redisClientPromise;
   }
 
   const client = REDIS_URL
@@ -976,16 +974,15 @@ async function getRedisClient() {
     console.error("Redis error", error);
   });
 
-  redisClientPromise = client
-    .connect()
-    .then(() => client)
-    .catch((error) => {
-      console.error("Failed to connect to Redis", error);
-      redisClientPromise = null;
-      return null as unknown as ReturnType<typeof createClient>;
-    });
+  redisClientPromise = client.connect().then(() => client);
 
-  return redisClientPromise as ReturnType<typeof createClient>;
+  try {
+    return await redisClientPromise;
+  } catch (error) {
+    console.error("Failed to connect to Redis", error);
+    redisClientPromise = null;
+    return null;
+  }
 }
 
 async function getCachedSimplyPrintFileId(cacheKey: string) {
