@@ -12,7 +12,7 @@ model Mapping {
   shopifyProductId     String
   shopifyVariantId     String?
   simplyprintFileName  String?
-  simplyprintFileNames Json?
+  simplyprintFileNames String?
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
 

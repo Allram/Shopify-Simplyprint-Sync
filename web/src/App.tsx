@@ -17,7 +17,7 @@ type Mapping = {
   shopifyProductId: string;
   shopifyVariantId: string | null;
   simplyprintFileName?: string | null;
-  simplyprintFileNames?: string[] | null;
+  simplyprintFileNames?: string | null;
 };
 
 type FileItem = {
@@ -456,12 +456,7 @@ function MappingRow({
   onSave,
   onDelete,
 }: MappingRowProps) {
-  const initialFiles =
-    current?.simplyprintFileNames && current.simplyprintFileNames.length > 0
-      ? current.simplyprintFileNames
-      : current?.simplyprintFileName
-        ? [current.simplyprintFileName]
-        : [""];
+  const initialFiles = getMappingFiles(current);
   const [fileNames, setFileNames] = useState<string[]>(initialFiles);
   const [saving, setSaving] = useState(false);
   const [files, setFiles] = useState<FileItem[]>([]);
@@ -470,17 +465,12 @@ function MappingRow({
   const [selectedSuggestion, setSelectedSuggestion] = useState<string>("");
 
   useEffect(() => {
-    const nextFiles =
-      current?.simplyprintFileNames && current.simplyprintFileNames.length > 0
-        ? current.simplyprintFileNames
-        : current?.simplyprintFileName
-          ? [current.simplyprintFileName]
-          : [""];
-    setFileNames(nextFiles);
+    setFileNames(getMappingFiles(current));
   }, [current?.simplyprintFileName, current?.simplyprintFileNames]);
 
   useEffect(() => {
-    const searchValue = fileNames.find((name) => name.trim().length > 0) ?? "";
+    const searchValue =
+      fileNames.find((name: string) => name.trim().length > 0) ?? "";
     if (!searchValue.trim()) {
       setFiles([]);
       return;
@@ -502,7 +492,7 @@ function MappingRow({
 
   useEffect(() => {
     if (selectedSuggestion) {
-      setFileNames((prev) => {
+      setFileNames((prev: string[]) => {
         const next = [...prev];
         const targetIndex = next.findIndex((name) => name.trim().length === 0);
         const index = targetIndex >= 0 ? targetIndex : 0;
@@ -518,7 +508,9 @@ function MappingRow({
   );
 
   const handleSave = async () => {
-    const cleaned = fileNames.map((name) => name.trim()).filter((name) => name);
+    const cleaned = fileNames
+      .map((name: string) => name.trim())
+      .filter((name: string) => name);
     if (cleaned.length === 0) {
       return;
     }
@@ -568,7 +560,7 @@ function MappingRow({
   };
 
   const updateFileName = (index: number, value: string) => {
-    setFileNames((prev) => {
+    setFileNames((prev: string[]) => {
       const next = [...prev];
       next[index] = value;
       return next;
@@ -576,11 +568,13 @@ function MappingRow({
   };
 
   const addFileInput = () => {
-    setFileNames((prev) => [...prev, ""]);
+    setFileNames((prev: string[]) => [...prev, ""]);
   };
 
   const removeFileInput = (index: number) => {
-    setFileNames((prev) => prev.filter((_, idx) => idx !== index));
+    setFileNames((prev: string[]) =>
+      prev.filter((_value: string, idx: number) => idx !== index)
+    );
   };
 
   return (
@@ -591,12 +585,14 @@ function MappingRow({
       </div>
       <div className="mapping-row__actions">
         <div className="mapping-row__files">
-          {fileNames.map((name, index) => (
+          {fileNames.map((name: string, index: number) => (
             <div key={`${productId}-${variantId}-${index}`} className="file-input">
               <input
                 list={`files-${productId}-${variantId ?? "product"}`}
                 value={name}
-                onChange={(event) => updateFileName(index, event.target.value)}
+                onChange={(event: React.ChangeEvent<HTMLInputElement>) =>
+                  updateFileName(index, event.target.value)
+                }
                 placeholder="SimplyPrint filename (e.g. Widget.gcode)"
               />
               <button
@@ -639,7 +635,9 @@ function MappingRow({
           <select
             id={`suggest-${productId}-${variantId}`}
             value={selectedSuggestion}
-            onChange={(event) => setSelectedSuggestion(event.target.value)}
+            onChange={(event: React.ChangeEvent<HTMLSelectElement>) =>
+              setSelectedSuggestion(event.target.value)
+            }
           >
             {suggested.map((option) => (
               <option key={option.id} value={option.fullName}>
@@ -652,13 +650,34 @@ function MappingRow({
       {suggestMessage && <div className="muted">{suggestMessage}</div>}
       {current && (
         <div className="mapping-row__current muted">
-          Current: {(current.simplyprintFileNames ?? [current.simplyprintFileName])
-            .filter(Boolean)
-            .join(", ")}
+          Current: {getMappingFiles(current).filter(Boolean).join(", ")}
         </div>
       )}
     </div>
   );
+}
+
+function getMappingFiles(mapping: Mapping | null): string[] {
+  if (!mapping) {
+    return [""];
+  }
+
+  if (mapping.simplyprintFileNames) {
+    try {
+      const parsed = JSON.parse(mapping.simplyprintFileNames);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed.map((name) => String(name));
+      }
+    } catch {
+      // ignore parse errors
+    }
+  }
+
+  if (mapping.simplyprintFileName) {
+    return [mapping.simplyprintFileName];
+  }
+
+  return [""];
 }
 
 type UnmatchedRowProps = {

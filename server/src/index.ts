@@ -282,11 +282,12 @@ app.post("/api/mappings", async (req: Request, res: Response) => {
       },
     });
 
+    const serializedFiles = JSON.stringify(normalizedFiles);
     const mapping = existing
       ? await prisma.mapping.update({
           where: { id: existing.id },
           data: {
-            simplyprintFileNames: normalizedFiles,
+            simplyprintFileNames: serializedFiles,
             simplyprintFileName: normalizedFiles[0],
           },
         })
@@ -294,7 +295,7 @@ app.post("/api/mappings", async (req: Request, res: Response) => {
           data: {
             shopifyProductId: productId,
             shopifyVariantId: normalizedVariantId,
-            simplyprintFileNames: normalizedFiles,
+            simplyprintFileNames: serializedFiles,
             simplyprintFileName: normalizedFiles[0],
           },
         });
@@ -471,7 +472,7 @@ app.post("/api/unmatched/:id/queue", async (req: Request, res: Response) => {
           where: { id: existing.id },
           data: {
             simplyprintFileName: payload.fileName,
-            simplyprintFileNames: [payload.fileName],
+            simplyprintFileNames: JSON.stringify([payload.fileName]),
           },
         });
       } else {
@@ -480,7 +481,7 @@ app.post("/api/unmatched/:id/queue", async (req: Request, res: Response) => {
             shopifyProductId: item.shopifyProductId,
             shopifyVariantId: item.shopifyVariantId,
             simplyprintFileName: payload.fileName,
-            simplyprintFileNames: [payload.fileName],
+            simplyprintFileNames: JSON.stringify([payload.fileName]),
           },
         });
       }
@@ -621,9 +622,18 @@ async function recordUnmatchedLineItem(input: {
 }
 
 function normalizeMappingFiles(mapping: any): string[] {
-  const files = Array.isArray(mapping?.simplyprintFileNames)
-    ? mapping.simplyprintFileNames
-    : [];
+  let files: string[] = [];
+  if (typeof mapping?.simplyprintFileNames === "string") {
+    try {
+      const parsed = JSON.parse(mapping.simplyprintFileNames);
+      if (Array.isArray(parsed)) {
+        files = parsed.map((name) => String(name));
+      }
+    } catch {
+      files = [];
+    }
+  }
+
   const legacy = mapping?.simplyprintFileName
     ? [String(mapping.simplyprintFileName)]
     : [];

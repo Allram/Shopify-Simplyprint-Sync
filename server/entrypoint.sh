@@ -9,6 +9,11 @@ if [ -n "$DATABASE_URL" ]; then
     echo "Applying Prisma schema (db push)..."
     ./node_modules/.bin/prisma db push
   fi
+
+  if [ -f "./dist/migrate-mappings.js" ]; then
+    echo "Running mapping migration..."
+    node ./dist/migrate-mappings.js
+  fi
 fi
 
 echo "Starting server..."
