@@ -16,7 +16,8 @@ type Mapping = {
   id: number;
   shopifyProductId: string;
   shopifyVariantId: string | null;
-  simplyprintFileName: string;
+  simplyprintFileName?: string | null;
+  simplyprintFileNames?: string[] | null;
 };
 
 type FileItem = {
@@ -48,6 +49,12 @@ type UnmatchedLineItem = {
   createdAt: string;
 };
 
+type HiddenProduct = {
+  id: number;
+  shopifyProductId: string;
+  createdAt: string;
+};
+
 const fetchJson = async <T,>(input: RequestInfo, init?: RequestInit) => {
   const response = await fetch(input, init);
   if (!response.ok) {
@@ -69,6 +76,10 @@ export default function App() {
   const [mappingFilter, setMappingFilter] = useState<
     "all" | "mapped" | "unmapped"
   >("all");
+  const [hiddenProductIds, setHiddenProductIds] = useState<Set<string>>(
+    () => new Set()
+  );
+  const [showHidden, setShowHidden] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [darkMode, setDarkMode] = useState(
@@ -80,13 +91,21 @@ export default function App() {
     setError(null);
 
     try {
-      const [productData, mappingData, groupData, queueSetting, unmatchedData] =
+      const [
+        productData,
+        mappingData,
+        groupData,
+        queueSetting,
+        unmatchedData,
+        hiddenData,
+      ] =
         await Promise.all([
         fetchJson<{ products: ShopifyProduct[] }>("/api/shopify/products"),
         fetchJson<{ mappings: Mapping[] }>("/api/mappings"),
         fetchJson<{ groups: QueueGroup[] }>("/api/simplyprint/queue-groups"),
         fetchJson<{ groupId: number | null }>("/api/settings/queue-group"),
           fetchJson<{ items: UnmatchedLineItem[] }>("/api/unmatched"),
+          fetchJson<{ hidden: HiddenProduct[] }>("/api/products/hidden"),
       ]);
 
       const filteredProducts = productData.products
@@ -101,6 +120,9 @@ export default function App() {
       setQueueGroups(groupData.groups);
       setQueueGroupId(queueSetting.groupId ?? null);
       setUnmatched(unmatchedData.items);
+      setHiddenProductIds(
+        new Set(hiddenData.hidden.map((item) => item.shopifyProductId))
+      );
     } catch (err) {
       console.error(err);
       setError("Failed to load data. Check server configuration.");
@@ -131,12 +153,12 @@ export default function App() {
   const upsertMapping = async (
     productId: string,
     variantId: string | null,
-    fileName: string
+    fileNames: string[]
   ) => {
     const payload = {
       productId,
       variantId,
-      fileName,
+      fileNames,
     };
 
     const result = await fetchJson<{ mapping: Mapping }>("/api/mappings", {
@@ -203,6 +225,24 @@ export default function App() {
     setUnmatched((prev: UnmatchedLineItem[]) =>
       prev.filter((item: UnmatchedLineItem) => item.id !== itemId)
     );
+  };
+
+  const hideProduct = async (productId: string) => {
+    await fetchJson("/api/products/hidden", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ productId }),
+    });
+    setHiddenProductIds((prev: Set<string>) => new Set(prev).add(productId));
+  };
+
+  const unhideProduct = async (productId: string) => {
+    await fetchJson(`/api/products/hidden/${productId}`, { method: "DELETE" });
+    setHiddenProductIds((prev: Set<string>) => {
+      const next = new Set(prev);
+      next.delete(productId);
+      return next;
+    });
   };
 
   return (
@@ -292,12 +332,25 @@ export default function App() {
                 <option value="unmapped">Unmatched only</option>
                 <option value="mapped">Matched only</option>
               </select>
+              <label className="checkbox">
+                <input
+                  type="checkbox"
+                  checked={showHidden}
+                  onChange={(event) => setShowHidden(event.target.checked)}
+                />
+                Show hidden
+              </label>
             </div>
           </div>
 
           <div className="product-grid">
             {products
               .map((product: ShopifyProduct) => {
+                const isHidden = hiddenProductIds.has(product.id);
+                if (isHidden && !showHidden) {
+                  return null;
+                }
+
                 const visibleVariants = product.variants.filter((variant) => {
                   const hasMapping = !!mappingFor(product.id, variant.id);
                   if (mappingFilter === "mapped") {
@@ -320,6 +373,14 @@ export default function App() {
                     <h2>{product.title}</h2>
                     <span className="muted">Product ID: {product.id}</span>
                   </div>
+                  <button
+                    className="btn btn--ghost"
+                    onClick={() =>
+                      isHidden ? unhideProduct(product.id) : hideProduct(product.id)
+                    }
+                  >
+                    {isHidden ? "Unhide" : "Hide"}
+                  </button>
                 </div>
 
                 <div className="variant-list">
@@ -377,7 +438,11 @@ type MappingRowProps = {
   variantId: string | null;
   current: Mapping | null;
   suggestQuery?: string;
-  onSave: (productId: string, variantId: string | null, fileName: string) => void;
+  onSave: (
+    productId: string,
+    variantId: string | null,
+    fileNames: string[]
+  ) => void;
   onDelete: (id: number) => void;
 };
 
@@ -391,7 +456,13 @@ function MappingRow({
   onSave,
   onDelete,
 }: MappingRowProps) {
-  const [fileName, setFileName] = useState(current?.simplyprintFileName ?? "");
+  const initialFiles =
+    current?.simplyprintFileNames && current.simplyprintFileNames.length > 0
+      ? current.simplyprintFileNames
+      : current?.simplyprintFileName
+        ? [current.simplyprintFileName]
+        : [""];
+  const [fileNames, setFileNames] = useState<string[]>(initialFiles);
   const [saving, setSaving] = useState(false);
   const [files, setFiles] = useState<FileItem[]>([]);
   const [suggestMessage, setSuggestMessage] = useState<string | null>(null);
@@ -399,11 +470,18 @@ function MappingRow({
   const [selectedSuggestion, setSelectedSuggestion] = useState<string>("");
 
   useEffect(() => {
-    setFileName(current?.simplyprintFileName ?? "");
-  }, [current?.simplyprintFileName]);
+    const nextFiles =
+      current?.simplyprintFileNames && current.simplyprintFileNames.length > 0
+        ? current.simplyprintFileNames
+        : current?.simplyprintFileName
+          ? [current.simplyprintFileName]
+          : [""];
+    setFileNames(nextFiles);
+  }, [current?.simplyprintFileName, current?.simplyprintFileNames]);
 
   useEffect(() => {
-    if (!fileName.trim()) {
+    const searchValue = fileNames.find((name) => name.trim().length > 0) ?? "";
+    if (!searchValue.trim()) {
       setFiles([]);
       return;
     }
@@ -411,7 +489,7 @@ function MappingRow({
     const handle = window.setTimeout(async () => {
       try {
         const result = await fetchJson<{ files: FileItem[] }>(
-          `/api/simplyprint/files?search=${encodeURIComponent(fileName.trim())}`
+          `/api/simplyprint/files?search=${encodeURIComponent(searchValue.trim())}`
         );
         setFiles(result.files.slice(0, 8));
       } catch (error) {
@@ -420,11 +498,17 @@ function MappingRow({
     }, 300);
 
     return () => window.clearTimeout(handle);
-  }, [fileName]);
+  }, [fileNames]);
 
   useEffect(() => {
     if (selectedSuggestion) {
-      setFileName(selectedSuggestion);
+      setFileNames((prev) => {
+        const next = [...prev];
+        const targetIndex = next.findIndex((name) => name.trim().length === 0);
+        const index = targetIndex >= 0 ? targetIndex : 0;
+        next[index] = selectedSuggestion;
+        return next;
+      });
     }
   }, [selectedSuggestion]);
 
@@ -434,13 +518,14 @@ function MappingRow({
   );
 
   const handleSave = async () => {
-    if (!fileName.trim()) {
+    const cleaned = fileNames.map((name) => name.trim()).filter((name) => name);
+    if (cleaned.length === 0) {
       return;
     }
 
     setSaving(true);
     try {
-      await onSave(productId, variantId, fileName.trim());
+      await onSave(productId, variantId, cleaned);
     } finally {
       setSaving(false);
     }
@@ -460,7 +545,7 @@ function MappingRow({
   };
 
   const handleSuggest = async () => {
-    const query = (suggestQuery ?? fileName).trim();
+    const query = (suggestQuery ?? fileNames.join(" ")).trim();
     if (!query) {
       return;
     }
@@ -474,14 +559,28 @@ function MappingRow({
       setFiles(result.files.slice(0, 8));
       setSuggested(result.files.slice(0, 3));
       setSelectedSuggestion(result.files[0]?.fullName ?? "");
-      if (result.files.length > 0) {
-        setFileName(result.files[0].fullName);
-      } else {
+      if (result.files.length === 0) {
         setSuggestMessage("No matching files found.");
       }
     } finally {
       setSaving(false);
     }
+  };
+
+  const updateFileName = (index: number, value: string) => {
+    setFileNames((prev) => {
+      const next = [...prev];
+      next[index] = value;
+      return next;
+    });
+  };
+
+  const addFileInput = () => {
+    setFileNames((prev) => [...prev, ""]);
+  };
+
+  const removeFileInput = (index: number) => {
+    setFileNames((prev) => prev.filter((_, idx) => idx !== index));
   };
 
   return (
@@ -491,17 +590,33 @@ function MappingRow({
         {subtitle && <div className="muted">{subtitle}</div>}
       </div>
       <div className="mapping-row__actions">
-        <input
-          list={`files-${productId}-${variantId ?? "product"}`}
-          value={fileName}
-          onChange={(event) => setFileName(event.target.value)}
-          placeholder="SimplyPrint filename (e.g. Widget.gcode)"
-        />
-        <datalist id={`files-${productId}-${variantId ?? "product"}`}>
-          {options.map((option: string) => (
-            <option key={option} value={option} />
+        <div className="mapping-row__files">
+          {fileNames.map((name, index) => (
+            <div key={`${productId}-${variantId}-${index}`} className="file-input">
+              <input
+                list={`files-${productId}-${variantId ?? "product"}`}
+                value={name}
+                onChange={(event) => updateFileName(index, event.target.value)}
+                placeholder="SimplyPrint filename (e.g. Widget.gcode)"
+              />
+              <button
+                className="btn btn--ghost"
+                onClick={() => removeFileInput(index)}
+                disabled={fileNames.length === 1}
+              >
+                Remove
+              </button>
+            </div>
           ))}
-        </datalist>
+          <datalist id={`files-${productId}-${variantId ?? "product"}`}>
+            {options.map((option: string) => (
+              <option key={option} value={option} />
+            ))}
+          </datalist>
+          <button className="btn btn--ghost" onClick={addFileInput}>
+            Add file
+          </button>
+        </div>
         <button className="btn btn--ghost" onClick={handleSuggest} disabled={saving}>
           Suggest
         </button>
@@ -537,7 +652,9 @@ function MappingRow({
       {suggestMessage && <div className="muted">{suggestMessage}</div>}
       {current && (
         <div className="mapping-row__current muted">
-          Current: {current.simplyprintFileName}
+          Current: {(current.simplyprintFileNames ?? [current.simplyprintFileName])
+            .filter(Boolean)
+            .join(", ")}
         </div>
       )}
     </div>

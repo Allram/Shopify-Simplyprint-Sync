@@ -11,7 +11,8 @@ model Mapping {
   id                   Int      @id @default(autoincrement())
   shopifyProductId     String
   shopifyVariantId     String?
-  simplyprintFileName  String
+  simplyprintFileName  String?
+  simplyprintFileNames Json?
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
 
@@ -39,4 +40,10 @@ model UnmatchedLineItem {
   @@index([orderId])
   @@index([shopifyProductId])
   @@index([shopifyVariantId])
+}
+
+model HiddenProduct {
+  id               Int      @id @default(autoincrement())
+  shopifyProductId String   @unique
+  createdAt        DateTime @default(now())
 }

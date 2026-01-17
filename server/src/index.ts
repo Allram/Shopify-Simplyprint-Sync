@@ -130,29 +130,33 @@ app.post(
           continue;
         }
 
-        console.log(
-          "Queueing file",
-          JSON.stringify({
-            file: mapping.simplyprintFileName,
-            productId,
-            variantId,
-            quantity,
-          })
-        );
-        try {
-          await addToSimplyPrintQueue(mapping.simplyprintFileName, quantity);
-        } catch (error) {
-          console.error("Failed to queue file", error);
-          if (orderId) {
-            await recordUnmatchedLineItem({
-              orderId,
-              orderName,
+        const filesToQueue = normalizeMappingFiles(mapping);
+
+        for (const fileName of filesToQueue) {
+          console.log(
+            "Queueing file",
+            JSON.stringify({
+              file: fileName,
               productId,
               variantId,
-              sku: item?.sku ? String(item.sku) : null,
               quantity,
-              reason: "Queueing failed",
-            });
+            })
+          );
+          try {
+            await addToSimplyPrintQueue(fileName, quantity);
+          } catch (error) {
+            console.error("Failed to queue file", error);
+            if (orderId) {
+              await recordUnmatchedLineItem({
+                orderId,
+                orderName,
+                productId,
+                variantId,
+                sku: item?.sku ? String(item.sku) : null,
+                quantity,
+                reason: "Queueing failed",
+              });
+            }
           }
         }
       }
@@ -209,16 +213,67 @@ app.get("/api/mappings", async (_req: Request, res: Response) => {
   res.json({ mappings });
 });
 
+app.get("/api/products/hidden", async (_req: Request, res: Response) => {
+  const hidden = await prisma.hiddenProduct.findMany({
+    orderBy: { createdAt: "desc" },
+  });
+  res.json({ hidden });
+});
+
+const hiddenProductSchema = z.object({
+  productId: z.string().min(1),
+});
+
+app.post("/api/products/hidden", async (req: Request, res: Response) => {
+  try {
+    const { productId } = hiddenProductSchema.parse(req.body);
+    const record = await prisma.hiddenProduct.upsert({
+      where: { shopifyProductId: productId },
+      update: {},
+      create: { shopifyProductId: productId },
+    });
+    res.json({ hidden: record });
+  } catch (error) {
+    console.error("Failed to hide product", error);
+    res.status(400).json({ error: "Invalid product id" });
+  }
+});
+
+app.delete(
+  "/api/products/hidden/:productId",
+  async (req: Request, res: Response) => {
+    const productId = String(req.params.productId ?? "");
+    if (!productId) {
+      return res.status(400).json({ error: "Invalid product id" });
+    }
+
+    await prisma.hiddenProduct
+      .delete({ where: { shopifyProductId: productId } })
+      .catch(() => undefined);
+
+    return res.json({ status: "deleted" });
+  }
+);
+
 const mappingSchema = z.object({
   productId: z.string().min(1),
   variantId: z.string().nullable().optional(),
-  fileName: z.string().min(1),
+  fileName: z.string().min(1).optional(),
+  fileNames: z.array(z.string().min(1)).optional(),
 });
 
 app.post("/api/mappings", async (req: Request, res: Response) => {
   try {
-    const { productId, variantId, fileName } = mappingSchema.parse(req.body);
+    const { productId, variantId, fileName, fileNames } =
+      mappingSchema.parse(req.body);
     const normalizedVariantId = variantId ?? null;
+    const normalizedFiles = (fileNames ?? (fileName ? [fileName] : [])).filter(
+      (name: string) => name.trim().length > 0
+    );
+
+    if (normalizedFiles.length === 0) {
+      return res.status(400).json({ error: "At least one file is required" });
+    }
 
     const existing = await prisma.mapping.findFirst({
       where: {
@@ -230,13 +285,17 @@ app.post("/api/mappings", async (req: Request, res: Response) => {
     const mapping = existing
       ? await prisma.mapping.update({
           where: { id: existing.id },
-          data: { simplyprintFileName: fileName },
+          data: {
+            simplyprintFileNames: normalizedFiles,
+            simplyprintFileName: normalizedFiles[0],
+          },
         })
       : await prisma.mapping.create({
           data: {
             shopifyProductId: productId,
             shopifyVariantId: normalizedVariantId,
-            simplyprintFileName: fileName,
+            simplyprintFileNames: normalizedFiles,
+            simplyprintFileName: normalizedFiles[0],
           },
         });
 
@@ -410,7 +469,10 @@ app.post("/api/unmatched/:id/queue", async (req: Request, res: Response) => {
       if (existing) {
         await prisma.mapping.update({
           where: { id: existing.id },
-          data: { simplyprintFileName: payload.fileName },
+          data: {
+            simplyprintFileName: payload.fileName,
+            simplyprintFileNames: [payload.fileName],
+          },
         });
       } else {
         await prisma.mapping.create({
@@ -418,6 +480,7 @@ app.post("/api/unmatched/:id/queue", async (req: Request, res: Response) => {
             shopifyProductId: item.shopifyProductId,
             shopifyVariantId: item.shopifyVariantId,
             simplyprintFileName: payload.fileName,
+            simplyprintFileNames: [payload.fileName],
           },
         });
       }
@@ -555,6 +618,16 @@ async function recordUnmatchedLineItem(input: {
       reason: input.reason,
     },
   });
+}
+
+function normalizeMappingFiles(mapping: any): string[] {
+  const files = Array.isArray(mapping?.simplyprintFileNames)
+    ? mapping.simplyprintFileNames
+    : [];
+  const legacy = mapping?.simplyprintFileName
+    ? [String(mapping.simplyprintFileName)]
+    : [];
+  return [...files, ...legacy].filter((name) => String(name).trim().length > 0);
 }
 
 let cachedQueueGroupId: number | null = null;

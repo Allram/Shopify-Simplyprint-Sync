@@ -186,6 +186,18 @@ body {
   align-items: center;
 }
 
+.mapping-row__files {
+  display: grid;
+  gap: 8px;
+}
+
+.file-input {
+  display: grid;
+  grid-template-columns: minmax(240px, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
 .mapping-row__actions input {
   width: 100%;
   padding: 10px 12px;
