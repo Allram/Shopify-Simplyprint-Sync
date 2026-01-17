@@ -217,7 +217,7 @@ app.post(
 app.use(express.json());
 
 app.get("/api/health", (_req: Request, res: Response) => {
-  res.json({ status: "ok" });
+  res.json({ status: "ok", redis: redisStatus });
 });
 
 app.get("/api/shopify/products", async (_req: Request, res: Response) => {
@@ -405,6 +405,12 @@ const mappingSchema = z.object({
   fileNames: z.array(z.string().min(1)).optional(),
 });
 
+const testQueueSchema = z.object({
+  productId: z.string().min(1),
+  variantId: z.string().nullable().optional(),
+  quantity: z.number().int().positive().optional().default(1),
+});
+
 app.post("/api/mappings", async (req: Request, res: Response) => {
   try {
     const { productId, variantId, fileName, fileNames } =
@@ -447,6 +453,30 @@ app.post("/api/mappings", async (req: Request, res: Response) => {
   } catch (error) {
     console.error("Failed to save mapping", error);
     res.status(400).json({ error: "Invalid mapping payload" });
+  }
+});
+
+app.post("/api/mappings/test-queue", async (req: Request, res: Response) => {
+  try {
+    const { productId, variantId, quantity } = testQueueSchema.parse(req.body);
+    const mapping = await findMapping(productId, variantId ?? null);
+    if (!mapping) {
+      return res.status(404).json({ error: "Mapping not found" });
+    }
+
+    const filesToQueue = normalizeMappingFiles(mapping);
+    if (filesToQueue.length === 0) {
+      return res.status(400).json({ error: "No files to queue" });
+    }
+
+    for (const fileName of filesToQueue) {
+      await addToSimplyPrintQueue(fileName, quantity);
+    }
+
+    res.json({ status: "queued", files: filesToQueue, quantity });
+  } catch (error) {
+    console.error("Failed to test queue mapping", error);
+    res.status(400).json({ error: "Failed to test queue mapping" });
   }
 });
 
@@ -870,6 +900,7 @@ let simplyPrintRequestChain: Promise<unknown> = Promise.resolve();
 
 type RedisClient = ReturnType<typeof createClient>;
 let redisClientPromise: Promise<RedisClient> | null = null;
+let redisStatus: "disabled" | "connecting" | "connected" | "error" = "disabled";
 
 async function getQueueGroupId() {
   if (cachedQueueGroupId !== null && Date.now() - cachedQueueGroupAt < 5 * 60_000) {
@@ -952,6 +983,7 @@ async function getRedisClient(): Promise<RedisClient | null> {
     !!process.env.REDIS_PORT;
 
   if (!hasRedisConfig) {
+    redisStatus = "disabled";
     return null;
   }
 
@@ -974,12 +1006,17 @@ async function getRedisClient(): Promise<RedisClient | null> {
     console.error("Redis error", error);
   });
 
-  redisClientPromise = client.connect().then(() => client);
+  redisStatus = "connecting";
+  redisClientPromise = client.connect().then(() => {
+    redisStatus = "connected";
+    return client;
+  });
 
   try {
     return await redisClientPromise;
   } catch (error) {
     console.error("Failed to connect to Redis", error);
+    redisStatus = "error";
     redisClientPromise = null;
     return null;
   }

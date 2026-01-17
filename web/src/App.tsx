@@ -235,6 +235,14 @@ export default function App() {
     });
   };
 
+  const testQueueMapping = async (productId: string, variantId: string | null) => {
+    await fetchJson("/api/mappings/test-queue", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ productId, variantId, quantity: 1 }),
+    });
+  };
+
   const deleteMapping = async (id: number) => {
     await fetchJson(`/api/mappings/${id}`, { method: "DELETE" });
     setMappings((prev: Mapping[]) =>
@@ -569,6 +577,7 @@ export default function App() {
                         variant.sku ?? `${product.title} ${variant.title}`
                       }
                       onSave={upsertMapping}
+                      onTestQueue={testQueueMapping}
                       onDelete={deleteMapping}
                     />
                   ))}
@@ -626,6 +635,7 @@ type MappingRowProps = {
     variantId: string | null,
     fileNames: string[]
   ) => void;
+  onTestQueue: (productId: string, variantId: string | null) => void;
   onDelete: (id: number) => void;
 };
 
@@ -639,6 +649,7 @@ function MappingRow({
   current,
   suggestQuery,
   onSave,
+  onTestQueue,
   onDelete,
 }: MappingRowProps) {
   const initialFiles = getMappingFiles(current);
@@ -716,6 +727,15 @@ function MappingRow({
     setSaving(true);
     try {
       await onDelete(current.id);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleTestQueue = async () => {
+    setSaving(true);
+    try {
+      await onTestQueue(productId, variantId);
     } finally {
       setSaving(false);
     }
@@ -810,6 +830,9 @@ function MappingRow({
         </div>
         <button className="btn btn--ghost" onClick={handleSuggest} disabled={saving}>
           Suggest
+        </button>
+        <button className="btn btn--ghost" onClick={handleTestQueue} disabled={saving}>
+          Test queue
         </button>
         <button className="btn" onClick={handleSave} disabled={saving}>
           {current ? "Update" : "Save"}
