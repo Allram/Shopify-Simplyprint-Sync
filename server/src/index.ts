@@ -901,6 +901,7 @@ let simplyPrintRequestChain: Promise<unknown> = Promise.resolve();
 
 type RedisClient = ReturnType<typeof createClient>;
 let redisClientPromise: Promise<RedisClient> | null = null;
+let redisClientInstance: RedisClient | null = null;
 let redisStatus: "disabled" | "connecting" | "connected" | "error" = "disabled";
 
 async function getQueueGroupId() {
@@ -918,13 +919,13 @@ async function getQueueGroupId() {
     return cachedQueueGroupId;
   }
 
-  const response = await withSimplyPrintRateLimit(() =>
+  const response = (await withSimplyPrintRateLimit(() =>
     axios.get(`${simplyPrintBaseUrl()}/queue/groups/Get`, {
       headers: {
         "X-API-KEY": SIMPLYPRINT_API_KEY,
       },
     })
-  );
+  )) as any;
 
   const groups = response.data?.list ?? [];
   const match = groups.find(
@@ -988,6 +989,10 @@ async function getRedisClient(): Promise<RedisClient | null> {
     return null;
   }
 
+  if (redisClientInstance?.isOpen) {
+    return redisClientInstance;
+  }
+
   if (redisClientPromise) {
     return redisClientPromise;
   }
@@ -998,18 +1003,27 @@ async function getRedisClient(): Promise<RedisClient | null> {
         socket: {
           host: REDIS_HOST ?? "127.0.0.1",
           port: REDIS_PORT,
+          reconnectStrategy: (retries: number) =>
+            Math.min(1000, 50 * (retries + 1)),
         },
         password: REDIS_PASSWORD,
         database: REDIS_DB,
       });
 
-  client.on("error", (error) => {
+  client.on("error", (error: unknown) => {
     console.error("Redis error", error);
+  });
+
+  client.on("end", () => {
+    redisStatus = "error";
+    redisClientPromise = null;
+    redisClientInstance = null;
   });
 
   redisStatus = "connecting";
   redisClientPromise = client.connect().then(() => {
     redisStatus = "connected";
+    redisClientInstance = client;
     return client;
   });
 
@@ -1019,6 +1033,7 @@ async function getRedisClient(): Promise<RedisClient | null> {
     console.error("Failed to connect to Redis", error);
     redisStatus = "error";
     redisClientPromise = null;
+    redisClientInstance = null;
     return null;
   }
 }
@@ -1030,7 +1045,15 @@ async function getCachedSimplyPrintFileId(cacheKey: string) {
       return null;
     }
     const value = await client.get(cacheKey);
-    return value ? Number(value) : null;
+    if (!value) {
+      return null;
+    }
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) {
+      await client.del(cacheKey).catch(() => undefined);
+      return null;
+    }
+    return parsed;
   } catch (error) {
     console.error("Failed to read from Redis", error);
     return null;
@@ -1041,6 +1064,9 @@ async function setCachedSimplyPrintFileId(cacheKey: string, fileId: number) {
   try {
     const client = await getRedisClient();
     if (!client) {
+      return;
+    }
+    if (!Number.isFinite(fileId)) {
       return;
     }
     await client.set(cacheKey, String(fileId), {
@@ -1097,6 +1123,9 @@ async function addToSimplyPrintQueue(fileName: string, amount: number) {
   ensureSimplyPrintEnv();
 
   const fileId = await resolveSimplyPrintFileId(fileName);
+  if (!Number.isFinite(fileId)) {
+    throw new Error(`Invalid SimplyPrint file id for ${fileName}`);
+  }
   const dryRun = await getQueueDryRun();
   if (dryRun) {
     console.log(
@@ -1132,8 +1161,14 @@ async function resolveSimplyPrintFileId(fileName: string) {
     return cached;
   }
 
+  const extractFileId = (file: any): number | null => {
+    const raw = file?.id ?? file?.file_id ?? file?.fileId ?? null;
+    const numeric = typeof raw === "number" ? raw : Number(raw);
+    return Number.isFinite(numeric) ? numeric : null;
+  };
+
   const fetchFiles = async (search: string) => {
-    const response = await withSimplyPrintRateLimit(() =>
+    const response = (await withSimplyPrintRateLimit(() =>
       axios.get(`${simplyPrintBaseUrl()}/files/GetFiles`, {
         headers: {
           "X-API-KEY": SIMPLYPRINT_API_KEY,
@@ -1143,7 +1178,7 @@ async function resolveSimplyPrintFileId(fileName: string) {
           global_search: true,
         },
       })
-    );
+    )) as any;
 
     return response.data?.files ?? [];
   };
@@ -1204,13 +1239,21 @@ async function resolveSimplyPrintFileId(fileName: string) {
       });
 
       if (fallback) {
-        await setCachedSimplyPrintFileId(cacheKey, fallback.id);
-        return fallback.id;
+        const fallbackId = extractFileId(fallback);
+        if (fallbackId === null || !Number.isFinite(fallbackId)) {
+          throw new Error(`SimplyPrint file id missing for ${fileName}`);
+        }
+        await setCachedSimplyPrintFileId(cacheKey, fallbackId);
+        return fallbackId;
       }
     }
   } else {
-    await setCachedSimplyPrintFileId(cacheKey, match.id);
-    return match.id;
+    const matchId = extractFileId(match);
+    if (matchId === null || !Number.isFinite(matchId)) {
+      throw new Error(`SimplyPrint file id missing for ${fileName}`);
+    }
+    await setCachedSimplyPrintFileId(cacheKey, matchId);
+    return matchId;
   }
 
   if (!match) {
