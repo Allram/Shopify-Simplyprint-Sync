@@ -1038,35 +1038,27 @@ async function getRedisClient(): Promise<RedisClient | null> {
   }
 }
 
-async function getCachedSimplyPrintFileId(cacheKey: string) {
+async function getCachedSimplyPrintFileId(cacheKey: string): Promise<string | null> {
   try {
     const client = await getRedisClient();
     if (!client) {
       return null;
     }
     const value = await client.get(cacheKey);
-    if (!value) {
-      return null;
-    }
-    const parsed = Number(value);
-    if (!Number.isFinite(parsed)) {
-      await client.del(cacheKey).catch(() => undefined);
-      return null;
-    }
-    return parsed;
+    return value && value.trim().length > 0 ? value : null;
   } catch (error) {
     console.error("Failed to read from Redis", error);
     return null;
   }
 }
 
-async function setCachedSimplyPrintFileId(cacheKey: string, fileId: number) {
+async function setCachedSimplyPrintFileId(cacheKey: string, fileId: string) {
   try {
     const client = await getRedisClient();
     if (!client) {
       return;
     }
-    if (!Number.isFinite(fileId)) {
+    if (!fileId || fileId.trim().length === 0) {
       return;
     }
     await client.set(cacheKey, String(fileId), {
@@ -1123,7 +1115,7 @@ async function addToSimplyPrintQueue(fileName: string, amount: number) {
   ensureSimplyPrintEnv();
 
   const fileId = await resolveSimplyPrintFileId(fileName);
-  if (!Number.isFinite(fileId)) {
+  if (!fileId || fileId.trim().length === 0) {
     throw new Error(`Invalid SimplyPrint file id for ${fileName}`);
   }
   const dryRun = await getQueueDryRun();
@@ -1154,14 +1146,14 @@ async function addToSimplyPrintQueue(fileName: string, amount: number) {
   );
 }
 
-async function resolveSimplyPrintFileId(fileName: string) {
+async function resolveSimplyPrintFileId(fileName: string): Promise<string> {
   const cacheKey = `simplyprint:file-id:${normalizeText(fileName)}`;
   const cached = await getCachedSimplyPrintFileId(cacheKey);
   if (cached !== null) {
     return cached;
   }
 
-  const extractFileId = (file: any): number | null => {
+  const extractFileId = (file: any): string | null => {
     const raw =
       file?.id ??
       file?.file_id ??
@@ -1180,8 +1172,11 @@ async function resolveSimplyPrintFileId(fileName: string) {
       file?.file?.filesystemId ??
       null;
 
-    const numeric = typeof raw === "number" ? raw : Number(raw);
-    return Number.isFinite(numeric) ? numeric : null;
+    if (raw === null || raw === undefined) {
+      return null;
+    }
+    const value = String(raw).trim();
+    return value.length > 0 ? value : null;
   };
 
   const fetchFiles = async (search: string, globalSearch = true) => {
@@ -1257,7 +1252,7 @@ async function resolveSimplyPrintFileId(fileName: string) {
 
       if (fallback) {
         const fallbackId = extractFileId(fallback);
-        if (fallbackId === null || !Number.isFinite(fallbackId)) {
+        if (fallbackId === null) {
           console.warn("SimplyPrint file match missing id", {
             fileName,
             fallback,
@@ -1270,7 +1265,7 @@ async function resolveSimplyPrintFileId(fileName: string) {
     }
   } else {
     const matchId = extractFileId(match);
-    if (matchId === null || !Number.isFinite(matchId)) {
+    if (matchId === null) {
       console.warn("SimplyPrint file match missing id", { fileName, match });
     } else {
       await setCachedSimplyPrintFileId(cacheKey, matchId);
@@ -1295,7 +1290,7 @@ async function resolveSimplyPrintFileId(fileName: string) {
 
     if (exactMatch) {
       const exactId = extractFileId(exactMatch);
-      if (exactId !== null && Number.isFinite(exactId)) {
+      if (exactId !== null) {
         await setCachedSimplyPrintFileId(cacheKey, exactId);
         return exactId;
       }
