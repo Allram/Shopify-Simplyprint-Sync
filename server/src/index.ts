@@ -1162,12 +1162,29 @@ async function resolveSimplyPrintFileId(fileName: string) {
   }
 
   const extractFileId = (file: any): number | null => {
-    const raw = file?.id ?? file?.file_id ?? file?.fileId ?? null;
+    const raw =
+      file?.id ??
+      file?.file_id ??
+      file?.fileId ??
+      file?.fileID ??
+      file?.fileid ??
+      file?.filesystem ??
+      file?.filesystem_id ??
+      file?.filesystemId ??
+      file?.fs_id ??
+      file?.fsId ??
+      file?.file?.id ??
+      file?.file?.file_id ??
+      file?.file?.fileId ??
+      file?.file?.filesystem_id ??
+      file?.file?.filesystemId ??
+      null;
+
     const numeric = typeof raw === "number" ? raw : Number(raw);
     return Number.isFinite(numeric) ? numeric : null;
   };
 
-  const fetchFiles = async (search: string) => {
+  const fetchFiles = async (search: string, globalSearch = true) => {
     const response = (await withSimplyPrintRateLimit(() =>
       axios.get(`${simplyPrintBaseUrl()}/files/GetFiles`, {
         headers: {
@@ -1175,7 +1192,7 @@ async function resolveSimplyPrintFileId(fileName: string) {
         },
         params: {
           search,
-          global_search: true,
+          global_search: globalSearch,
         },
       })
     )) as any;
@@ -1241,24 +1258,55 @@ async function resolveSimplyPrintFileId(fileName: string) {
       if (fallback) {
         const fallbackId = extractFileId(fallback);
         if (fallbackId === null || !Number.isFinite(fallbackId)) {
-          throw new Error(`SimplyPrint file id missing for ${fileName}`);
+          console.warn("SimplyPrint file match missing id", {
+            fileName,
+            fallback,
+          });
+        } else {
+          await setCachedSimplyPrintFileId(cacheKey, fallbackId);
+          return fallbackId;
         }
-        await setCachedSimplyPrintFileId(cacheKey, fallbackId);
-        return fallbackId;
       }
     }
   } else {
     const matchId = extractFileId(match);
     if (matchId === null || !Number.isFinite(matchId)) {
-      throw new Error(`SimplyPrint file id missing for ${fileName}`);
+      console.warn("SimplyPrint file match missing id", { fileName, match });
+    } else {
+      await setCachedSimplyPrintFileId(cacheKey, matchId);
+      return matchId;
     }
-    await setCachedSimplyPrintFileId(cacheKey, matchId);
-    return matchId;
   }
 
-  if (!match) {
-    throw new Error(`SimplyPrint file not found: ${fileName}`);
+  const exactSearches = Array.from(
+    new Set(
+      [fileName, fileName.replace(/\.[^/.]+$/, "").trim()].filter(
+        (value) => value.length > 0
+      )
+    )
+  );
+
+  for (const search of exactSearches) {
+    const exactFiles = await fetchFiles(search, false);
+    const exactMatch = exactFiles.find((file: any) => {
+      const fullName = file.ext ? `${file.name}.${file.ext}` : file.name;
+      return fullName.toLowerCase() === target || file.name.toLowerCase() === target;
+    });
+
+    if (exactMatch) {
+      const exactId = extractFileId(exactMatch);
+      if (exactId !== null && Number.isFinite(exactId)) {
+        await setCachedSimplyPrintFileId(cacheKey, exactId);
+        return exactId;
+      }
+      console.warn("SimplyPrint exact file match missing id", {
+        fileName,
+        exactMatch,
+      });
+    }
   }
+
+  throw new Error(`SimplyPrint file id missing for ${fileName}`);
 }
 
 function normalizeText(value: string) {
