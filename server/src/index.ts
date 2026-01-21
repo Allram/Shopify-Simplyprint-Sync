@@ -232,18 +232,21 @@ app.get("/api/shopify/products", async (_req: Request, res: Response) => {
       },
       params: {
         limit: 250,
+        status: "active",
       },
     });
 
-    const products = (response.data?.products ?? []).map((product: any) => ({
-      id: String(product.id),
-      title: product.title,
-      variants: (product.variants ?? []).map((variant: any) => ({
-        id: String(variant.id),
-        title: variant.title,
-        sku: variant.sku,
-      })),
-    }));
+    const products = (response.data?.products ?? [])
+      .filter((product: any) => String(product?.status ?? "") === "active")
+      .map((product: any) => ({
+        id: String(product.id),
+        title: product.title,
+        variants: (product.variants ?? []).map((variant: any) => ({
+          id: String(variant.id),
+          title: variant.title,
+          sku: variant.sku,
+        })),
+      }));
 
     res.json({ products });
   } catch (error) {
