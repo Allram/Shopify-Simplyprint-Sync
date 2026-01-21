@@ -1001,7 +1001,14 @@ async function getRedisClient(): Promise<RedisClient | null> {
   }
 
   const client = REDIS_URL
-    ? createClient({ url: REDIS_URL })
+    ? createClient({
+        url: REDIS_URL,
+        socket: {
+          reconnectStrategy: (retries: number) => Math.min(1000, 50 * (retries + 1)),
+        },
+        password: REDIS_PASSWORD,
+        database: REDIS_DB,
+      })
     : createClient({
         socket: {
           host: REDIS_HOST ?? "127.0.0.1",
@@ -1015,6 +1022,22 @@ async function getRedisClient(): Promise<RedisClient | null> {
 
   client.on("error", (error: unknown) => {
     console.error("Redis error", error);
+    redisStatus = "error";
+  });
+
+  client.on("connect", () => {
+    // connection handshake started
+    redisStatus = "connecting";
+  });
+
+  client.on("ready", () => {
+    // fully ready to use
+    redisStatus = "connected";
+  });
+
+  client.on("reconnecting", (delay: number) => {
+    redisStatus = "connecting";
+    console.warn("Redis reconnecting, delay(ms):", delay);
   });
 
   client.on("end", () => {
