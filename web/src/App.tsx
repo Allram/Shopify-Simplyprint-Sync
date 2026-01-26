@@ -630,14 +630,10 @@ function MappingRow({
   const handleSkipQueueChange = async (nextValue: boolean) => {
     setSkipQueue(nextValue);
 
-    if (!current) {
-      return;
-    }
-
     const cleaned = fileNames
       .map((name: string) => name.trim())
       .filter((name: string) => name);
-    if (cleaned.length === 0) {
+    if (cleaned.length === 0 && !current && !nextValue) {
       return;
     }
 

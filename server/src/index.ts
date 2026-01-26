@@ -384,16 +384,37 @@ app.post("/api/mappings", async (req: Request, res: Response) => {
       (name: string) => name.trim().length > 0
     );
 
-    if (normalizedFiles.length === 0) {
-      return res.status(400).json({ error: "At least one file is required" });
-    }
-
     const existing = await prisma.mapping.findFirst({
       where: {
         shopifyProductId: productId,
         shopifyVariantId: normalizedVariantId,
       },
     });
+
+    if (normalizedFiles.length === 0) {
+      if (skipQueue !== undefined) {
+        if (existing) {
+          const mapping = await prisma.mapping.update({
+            where: { id: existing.id },
+            data: { skipQueue },
+          });
+          return res.json({ mapping });
+        }
+
+        if (skipQueue) {
+          const mapping = await prisma.mapping.create({
+            data: {
+              shopifyProductId: productId,
+              shopifyVariantId: normalizedVariantId,
+              skipQueue: true,
+            },
+          });
+          return res.json({ mapping });
+        }
+      }
+
+      return res.status(400).json({ error: "At least one file is required" });
+    }
 
     const serializedFiles = JSON.stringify(normalizedFiles);
     const mapping = existing
