@@ -400,15 +400,18 @@ export default function App() {
                 const visibleVariants = product.variants.filter((variant) => {
                   const mapping = mappingFor(product.id, variant.id);
                   const hasMapping = !!mapping;
+
+                  if (hideSkipQueue && mapping?.skipQueue) {
+                    return false;
+                  }
+
                   if (mappingFilter === "mapped") {
                     return hasMapping;
                   }
                   if (mappingFilter === "unmapped") {
                     return !hasMapping;
                   }
-                  if (hideSkipQueue && mapping?.skipQueue) {
-                    return false;
-                  }
+
                   return true;
                 });
 
@@ -518,6 +521,8 @@ function MappingRow({
   const [suggested, setSuggested] = useState<FileItem[]>([]);
   const [selectedSuggestion, setSelectedSuggestion] = useState<string>("");
   const [activeSearch, setActiveSearch] = useState<string>("");
+  const [testMessage, setTestMessage] = useState<string | null>(null);
+  const [testing, setTesting] = useState(false);
 
   useEffect(() => {
     setFileNames(getMappingFiles(current));
@@ -588,6 +593,44 @@ function MappingRow({
       await onDelete(current.id);
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleTestQueue = async () => {
+    const cleaned = fileNames
+      .map((name: string) => name.trim())
+      .filter((name: string) => name);
+    if (cleaned.length === 0) {
+      setTestMessage("Add at least one file before testing.");
+      return;
+    }
+
+    setTesting(true);
+    setTestMessage(null);
+    try {
+      const result = await fetchJson<{
+        results: { fileName: string; status: "ok" | "error"; message?: string }[];
+      }>("/api/simplyprint/test-queue", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fileNames: cleaned }),
+      });
+
+      const failed = result.results.filter((entry) => entry.status !== "ok");
+      if (failed.length === 0) {
+        setTestMessage("All files are ready to queue.");
+      } else {
+        setTestMessage(
+          failed
+            .map((entry) => `${entry.fileName}: ${entry.message ?? "Failed"}`)
+            .join(" | ")
+        );
+      }
+    } catch (error) {
+      console.error(error);
+      setTestMessage("Test queue failed.");
+    } finally {
+      setTesting(false);
     }
   };
 
@@ -699,6 +742,9 @@ function MappingRow({
         <button className="btn btn--ghost" onClick={handleSuggest} disabled={saving}>
           Suggest
         </button>
+        <button className="btn btn--ghost" onClick={handleTestQueue} disabled={testing}>
+          {testing ? "Testing…" : "Test queue"}
+        </button>
         <button className="btn" onClick={handleSave} disabled={saving}>
           {current ? "Update" : "Save"}
         </button>
@@ -731,6 +777,7 @@ function MappingRow({
         </div>
       )}
       {suggestMessage && <div className="muted">{suggestMessage}</div>}
+      {testMessage && <div className="muted">{testMessage}</div>}
       {current && (
         <div className="mapping-row__current muted">
           Current: {getMappingFiles(current).filter(Boolean).join(", ")}

@@ -483,6 +483,62 @@ app.get("/api/simplyprint/files", async (req: Request, res: Response) => {
   }
 });
 
+const testQueueSchema = z.object({
+  fileNames: z.array(z.string().min(1)),
+  quantity: z.number().int().positive().optional().default(1),
+  dryRun: z.boolean().optional().default(false),
+});
+
+app.post("/api/simplyprint/test-queue", async (req: Request, res: Response) => {
+  try {
+    ensureSimplyPrintEnv();
+    const { fileNames, quantity, dryRun } = testQueueSchema.parse(req.body);
+
+    await getQueueGroupId();
+
+    const results = [] as {
+      fileName: string;
+      status: "ok" | "error";
+      message?: string;
+    }[];
+
+    for (const fileName of fileNames) {
+      try {
+        const fileId = await resolveSimplyPrintFileId(fileName);
+        if (!dryRun) {
+          const groupId = await getQueueGroupId();
+          await axios.post(
+            `${simplyPrintBaseUrl()}/queue/AddItem`,
+            {
+              filesystem: fileId,
+              amount: quantity,
+              group: groupId,
+            },
+            {
+              headers: {
+                "X-API-KEY": SIMPLYPRINT_API_KEY,
+              },
+            }
+          );
+        }
+
+        results.push({ fileName, status: "ok" });
+      } catch (error: any) {
+        results.push({
+          fileName,
+          status: "error",
+          message: error?.message ?? "Failed to validate file",
+        });
+      }
+    }
+
+    return res.json({ results });
+  } catch (error) {
+    console.error("Failed to test queue", error);
+    return res.status(400).json({ error: "Failed to test queue" });
+  }
+});
+
 app.get("/api/simplyprint/suggest", async (req: Request, res: Response) => {
   try {
     ensureSimplyPrintEnv();

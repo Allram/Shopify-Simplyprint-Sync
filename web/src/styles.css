@@ -181,7 +181,7 @@ body {
 
 .mapping-row__actions {
   display: grid;
-  grid-template-columns: minmax(240px, 1fr) auto auto auto auto;
+  grid-template-columns: minmax(240px, 1fr) auto auto auto auto auto;
   gap: 8px;
   align-items: center;
 }
