@@ -297,6 +297,7 @@ app.get("/api/shopify/products", async (_req: Request, res: Response) => {
       },
       params: {
         limit: 250,
+        status: "active",
       },
     });
 

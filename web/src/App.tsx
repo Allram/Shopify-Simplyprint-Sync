@@ -77,6 +77,9 @@ export default function App() {
   const [mappingFilter, setMappingFilter] = useState<
     "all" | "mapped" | "unmapped"
   >("all");
+  const [skipQueueSort, setSkipQueueSort] = useState<
+    "none" | "skip-first" | "skip-last"
+  >("none");
   const [hiddenProductIds, setHiddenProductIds] = useState<Set<string>>(
     () => new Set()
   );
@@ -335,6 +338,22 @@ export default function App() {
                 <option value="unmapped">Unmatched only</option>
                 <option value="mapped">Matched only</option>
               </select>
+              <label className="muted" htmlFor="skipQueueSort">
+                Sort by skip queue:
+              </label>
+              <select
+                id="skipQueueSort"
+                value={skipQueueSort}
+                onChange={(event) =>
+                  setSkipQueueSort(
+                    event.target.value as "none" | "skip-first" | "skip-last"
+                  )
+                }
+              >
+                <option value="none">Default</option>
+                <option value="skip-first">Skip queue first</option>
+                <option value="skip-last">Skip queue last</option>
+              </select>
               <label className="checkbox">
                 <input
                   type="checkbox"
@@ -354,16 +373,34 @@ export default function App() {
                   return null;
                 }
 
-                const visibleVariants = product.variants.filter((variant) => {
-                  const hasMapping = !!mappingFor(product.id, variant.id);
-                  if (mappingFilter === "mapped") {
-                    return hasMapping;
-                  }
-                  if (mappingFilter === "unmapped") {
-                    return !hasMapping;
-                  }
-                  return true;
-                });
+                const visibleVariants = product.variants
+                  .filter((variant) => {
+                    const hasMapping = !!mappingFor(product.id, variant.id);
+                    if (mappingFilter === "mapped") {
+                      return hasMapping;
+                    }
+                    if (mappingFilter === "unmapped") {
+                      return !hasMapping;
+                    }
+                    return true;
+                  })
+                  .sort((a, b) => {
+                    if (skipQueueSort === "none") {
+                      return 0;
+                    }
+                    const aSkip = Boolean(
+                      mappingFor(product.id, a.id)?.skipQueue
+                    );
+                    const bSkip = Boolean(
+                      mappingFor(product.id, b.id)?.skipQueue
+                    );
+                    if (aSkip === bSkip) {
+                      return a.title.localeCompare(b.title);
+                    }
+                    return skipQueueSort === "skip-first"
+                      ? Number(bSkip) - Number(aSkip)
+                      : Number(aSkip) - Number(bSkip);
+                  });
 
                 if (visibleVariants.length === 0) {
                   return null;
