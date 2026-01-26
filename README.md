@@ -29,19 +29,7 @@ Create a .env file for the server using server/.env.example as a template:
 Shopify apps require OAuth. Configure SHOPIFY_APP_API_KEY/SECRET/URL and then install the app by visiting /api/shopify/auth.
 The access token is stored in the database after installation.
 
-## Local development
-1. Install dependencies:
-   - In server: npm install
-   - In web: npm install
-2. Generate Prisma client and migrate database:
-   - In server: npm run prisma:generate
-   - In server: npm run prisma:migrate
-3. Start backend:
-   - In server: npm run dev
-4. Start frontend:
-   - In web: npm run dev
 
-The web app is served at port 5173 in dev mode, and it proxies API requests to the server at port 4000.
 
 ## Docker
 Use docker-compose.yml to run everything in one container. Provide secrets via environment variables.
@@ -58,7 +46,7 @@ Note: The Docker image uses Debian slim with OpenSSL installed to satisfy Prisma
 ## Shopify webhook
 Create a Shopify webhook for orders/create and point it to:
 
-  /api/webhooks/shopify/orders/create
+  https://YourServer.mydomain.com/api/webhooks/shopify/orders/create
 
 If you set SHOPIFY_WEBHOOK_SECRET, the webhook signature is verified.
 If BASIC_AUTH_USER/BASIC_AUTH_PASS are set, the webhook still works because it is excluded from auth.
