@@ -8,6 +8,7 @@ import { fileURLToPath } from "url";
 import axios from "axios";
 import { PrismaClient } from "@prisma/client";
 import { z } from "zod";
+import FormData from "form-data";
 
 dotenv.config();
 
@@ -31,6 +32,8 @@ const SIMPLYPRINT_COMPANY_ID = process.env.SIMPLYPRINT_COMPANY_ID;
 const SIMPLYPRINT_API_KEY = process.env.SIMPLYPRINT_API_KEY;
 const SIMPLYPRINT_QUEUE_GROUP_NAME =
   process.env.SIMPLYPRINT_QUEUE_GROUP_NAME ?? "Shopify";
+
+const LOCAL_FILES_DIR = process.env.LOCAL_FILES_DIR ?? "/RemoteFiles";
 
 const BASIC_AUTH_USER = process.env.BASIC_AUTH_USER;
 const BASIC_AUTH_PASS = process.env.BASIC_AUTH_PASS;
@@ -322,7 +325,15 @@ app.get("/api/mappings", async (_req: Request, res: Response) => {
   const mappings = await prisma.mapping.findMany({
     orderBy: [{ shopifyProductId: "asc" }, { shopifyVariantId: "asc" }],
   });
-  res.json({ mappings });
+  const enriched = mappings.map((mapping) => {
+    const files = normalizeMappingFiles(mapping);
+    const localFileNames = files.filter((name) => !!resolveLocalFilePath(name));
+    return {
+      ...mapping,
+      localFileNames,
+    };
+  });
+  res.json({ mappings: enriched });
 });
 
 app.get("/api/products/hidden", async (_req: Request, res: Response) => {
@@ -494,8 +505,6 @@ app.post("/api/simplyprint/test-queue", async (req: Request, res: Response) => {
     ensureSimplyPrintEnv();
     const { fileNames, quantity, dryRun } = testQueueSchema.parse(req.body);
 
-    await getQueueGroupId();
-
     const results = [] as {
       fileName: string;
       status: "ok" | "error";
@@ -504,15 +513,22 @@ app.post("/api/simplyprint/test-queue", async (req: Request, res: Response) => {
 
     for (const fileName of fileNames) {
       try {
-        const fileId = await resolveSimplyPrintFileId(fileName);
-        if (!dryRun) {
+        if (dryRun) {
+          const localPath = resolveLocalFilePath(fileName);
+          if (!localPath) {
+            await resolveSimplyPrintFileId(fileName);
+          }
+        } else {
+          const queued = await resolveQueueFile(fileName);
           const groupId = await getQueueGroupId();
           await axios.post(
             `${simplyPrintBaseUrl()}/queue/AddItem`,
             {
-              filesystem: fileId,
               amount: quantity,
               group: groupId,
+              ...(queued.type === "apiFile"
+                ? { fileId: queued.id }
+                : { filesystem: queued.id }),
             },
             {
               headers: {
@@ -946,15 +962,17 @@ async function getQueueGroupId() {
 async function addToSimplyPrintQueue(fileName: string, amount: number) {
   ensureSimplyPrintEnv();
 
-  const fileId = await resolveSimplyPrintFileId(fileName);
+  const queued = await resolveQueueFile(fileName);
   const groupId = await getQueueGroupId();
 
   await axios.post(
     `${simplyPrintBaseUrl()}/queue/AddItem`,
     {
-      filesystem: fileId,
       amount,
       group: groupId,
+      ...(queued.type === "apiFile"
+        ? { fileId: queued.id }
+        : { filesystem: queued.id }),
     },
     {
       headers: {
@@ -962,6 +980,73 @@ async function addToSimplyPrintQueue(fileName: string, amount: number) {
       },
     }
   );
+}
+
+async function resolveQueueFile(
+  fileName: string
+): Promise<{ type: "filesystem" | "apiFile"; id: string }> {
+  const localPath = resolveLocalFilePath(fileName);
+  if (localPath) {
+    const apiFileId = await uploadLocalFile(localPath);
+    return { type: "apiFile", id: apiFileId };
+  }
+
+  const fileId = await resolveSimplyPrintFileId(fileName);
+  return { type: "filesystem", id: fileId };
+}
+
+function resolveLocalFilePath(fileName: string): string | null {
+  const trimmed = fileName.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const baseDir = path.resolve(LOCAL_FILES_DIR);
+  const candidate = path.isAbsolute(trimmed)
+    ? path.resolve(trimmed)
+    : path.resolve(baseDir, trimmed);
+
+  if (!candidate.startsWith(baseDir)) {
+    return null;
+  }
+
+  try {
+    const stat = fs.statSync(candidate);
+    if (!stat.isFile()) {
+      return null;
+    }
+  } catch {
+    return null;
+  }
+
+  return candidate;
+}
+
+async function uploadLocalFile(localPath: string): Promise<string> {
+  ensureSimplyPrintEnv();
+
+  const form = new FormData();
+  form.append("file", fs.createReadStream(localPath));
+
+  const response = await axios.post(
+    `https://files.simplyprint.io/${SIMPLYPRINT_COMPANY_ID}/files/Upload`,
+    form,
+    {
+      headers: {
+        "X-API-KEY": SIMPLYPRINT_API_KEY,
+        ...form.getHeaders(),
+      },
+      maxContentLength: Infinity,
+      maxBodyLength: Infinity,
+    }
+  );
+
+  const fileId = response.data?.file?.id;
+  if (!fileId) {
+    throw new Error("Failed to upload local file to SimplyPrint");
+  }
+
+  return String(fileId);
 }
 
 async function resolveSimplyPrintFileId(fileName: string) {

@@ -19,6 +19,7 @@ type Mapping = {
   simplyprintFileName?: string | null;
   simplyprintFileNames?: string | null;
   skipQueue?: boolean | null;
+  localFileNames?: string[] | null;
 };
 
 type FileItem = {
@@ -523,6 +524,10 @@ function MappingRow({
   const [activeSearch, setActiveSearch] = useState<string>("");
   const [testMessage, setTestMessage] = useState<string | null>(null);
   const [testing, setTesting] = useState(false);
+  const localFileNames = useMemo(
+    () => new Set(current?.localFileNames ?? []),
+    [current?.localFileNames]
+  );
 
   useEffect(() => {
     setFileNames(getMappingFiles(current));
@@ -781,6 +786,11 @@ function MappingRow({
       {current && (
         <div className="mapping-row__current muted">
           Current: {getMappingFiles(current).filter(Boolean).join(", ")}
+          {localFileNames.size > 0 && (
+            <span className="mapping-row__local">
+              Local file{localFileNames.size > 1 ? "s" : ""}: {Array.from(localFileNames).join(", ")}
+            </span>
+          )}
         </div>
       )}
     </div>
