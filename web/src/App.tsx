@@ -81,6 +81,7 @@ export default function App() {
   const [mappingFilter, setMappingFilter] = useState<
     "all" | "mapped" | "unmapped"
   >("all");
+  const [productSearch, setProductSearch] = useState("");
   const [hideSkipQueue, setHideSkipQueue] = useState(false);
   const [hiddenProductIds, setHiddenProductIds] = useState<Set<string>>(
     () => new Set()
@@ -369,6 +370,13 @@ export default function App() {
               </div>
             </div>
             <div className="mapping-filters">
+              <input
+                className="input"
+                type="text"
+                value={productSearch}
+                onChange={(event) => setProductSearch(event.target.value)}
+                placeholder="Search product or SKU"
+              />
               <label className="muted" htmlFor="mappingFilter">
                 Filter variants:
               </label>
@@ -404,6 +412,17 @@ export default function App() {
 
           <div className="product-grid">
             {products
+              .filter((product: ShopifyProduct) => {
+                const query = productSearch.trim().toLowerCase();
+                if (!query) {
+                  return true;
+                }
+                const inTitle = product.title.toLowerCase().includes(query);
+                const inSku = product.variants.some((variant) =>
+                  (variant.sku ?? "").toLowerCase().includes(query)
+                );
+                return inTitle || inSku;
+              })
               .map((product: ShopifyProduct) => {
                 const isHidden = hiddenProductIds.has(product.id);
                 if (isHidden && !showHidden) {

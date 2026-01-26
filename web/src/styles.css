@@ -25,6 +25,7 @@
   --btn-primary: #3b82f6;
   --btn-ghost: #1f2937;
   --btn-ghost-text: #e2e8f0;
+  --input-bg: #0f172a;
 }
 
 * {
@@ -136,7 +137,7 @@ body {
   padding: 10px 12px;
   border-radius: 10px;
   border: 1px solid var(--input-border);
-  background: transparent;
+  background: var(--input-bg, transparent);
   color: var(--text);
 }
 
@@ -151,7 +152,7 @@ body {
   padding: 8px 12px;
   border-radius: 10px;
   border: 1px solid var(--input-border);
-  background: transparent;
+  background: var(--input-bg, transparent);
   color: var(--text);
 }
 
@@ -235,7 +236,7 @@ body {
   padding: 8px 12px;
   border-radius: 10px;
   border: 1px solid var(--input-border);
-  background: transparent;
+  background: var(--input-bg, transparent);
   color: var(--text);
 }
 
