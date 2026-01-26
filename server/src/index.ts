@@ -12,6 +12,10 @@ import FormData from "form-data";
 
 dotenv.config();
 
+if (!process.env.DATABASE_URL) {
+  process.env.DATABASE_URL = "file:/app/data/app.db";
+}
+
 const app = express();
 const prisma = new PrismaClient();
 

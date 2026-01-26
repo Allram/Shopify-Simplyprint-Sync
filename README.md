@@ -1,5 +1,9 @@
 # Shopify → SimplyPrint Sync
 
+> ## ✨ SimplyPrint referral
+> Want to try SimplyPrint? Use this referral link to sign up and support the project:
+> https://simplyprint.io/ref/WGEW4CPQ
+
 This service lets you map Shopify products and variants to SimplyPrint files. When a Shopify order is created, mapped items are added to the SimplyPrint "Shopify" queue group.
 
 ## Features
@@ -12,7 +16,7 @@ This service lets you map Shopify products and variants to SimplyPrint files. Wh
 Create a .env file for the server using server/.env.example as a template:
 
 - PORT
-- DATABASE_URL
+- DATABASE_URL (optional, defaults to file:/app/data/app.db)
 - SHOPIFY_SHOP_DOMAIN
 - SHOPIFY_APP_API_KEY (Custom App Client ID)
 - SHOPIFY_APP_API_SECRET (Custom App Secret)
@@ -25,6 +29,10 @@ Create a .env file for the server using server/.env.example as a template:
 - SIMPLYPRINT_QUEUE_GROUP_NAME
 - BASIC_AUTH_USER (optional)
 - BASIC_AUTH_PASS (optional)
+
+## Volumes
+     - ./data:/app/data (for the database)
+     - ./RemoteFiles:/RemoteFiles (If you want to map up/upload local files to Simplyprint queue)
 
 Shopify apps require OAuth after 1. January 2026:
 
@@ -48,7 +56,7 @@ Build and run manually:
 1. Build image:
    docker build -t shopify-simplyprint-sync:latest .
 2. Run container:
-   docker run --name shopify-simplyprint-sync -p 4000:4000 -v %cd%/data:/app/data -e SHOPIFY_APP_API_KEY=YOUR_APP_KEY -e SHOPIFY_APP_API_SECRET=YOUR_APP_SECRET -e SHOPIFY_APP_URL=YOUR_PUBLIC_URL -e -e SIMPLYPRINT_COMPANY_ID=YOUR_COMPANY_ID -e SIMPLYPRINT_API_KEY=YOUR_SIMPLYPRINT_API_KEY -e SHOPIFY_SHOP_DOMAIN=your-store.myshopify.com -e SIMPLYPRINT_QUEUE_GROUP_NAME=Shopify -e DATABASE_URL=file:/app/data/app.db shopify-simplyprint-sync:latest
+   docker run --name shopify-simplyprint-sync -p 4000:4000 -v %cd%/data:/app/data -e SHOPIFY_APP_API_KEY=YOUR_APP_KEY -e SHOPIFY_APP_API_SECRET=YOUR_APP_SECRET -e SHOPIFY_APP_URL=YOUR_PUBLIC_URL -e SIMPLYPRINT_COMPANY_ID=YOUR_COMPANY_ID -e SIMPLYPRINT_API_KEY=YOUR_SIMPLYPRINT_API_KEY -e SHOPIFY_SHOP_DOMAIN=your-store.myshopify.com -e SIMPLYPRINT_QUEUE_GROUP_NAME=Shopify shopify-simplyprint-sync:latest
 
 Note: The Docker image uses Debian slim with OpenSSL installed to satisfy Prisma runtime requirements.
 

@@ -6,7 +6,6 @@ services:
     environment:
       NODE_ENV: production
       PORT: 4000
-      DATABASE_URL: file:/app/data/app.db
       SHOPIFY_SHOP_DOMAIN: ${SHOPIFY_SHOP_DOMAIN}
       SHOPIFY_APP_API_KEY: ${SHOPIFY_APP_API_KEY}
       SHOPIFY_APP_API_SECRET: ${SHOPIFY_APP_API_SECRET}
