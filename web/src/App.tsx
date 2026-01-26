@@ -28,6 +28,7 @@ type FileItem = {
   ext?: string | null;
   fullName: string;
   score?: number;
+  source?: "local" | "remote";
 };
 
 type QueueGroup = {
@@ -543,10 +544,33 @@ function MappingRow({
 
     const handle = window.setTimeout(async () => {
       try {
-        const result = await fetchJson<{ files: FileItem[] }>(
-          `/api/simplyprint/files?search=${encodeURIComponent(searchValue)}`
+        const [remoteResult, localResult] = await Promise.all([
+          fetchJson<{ files: FileItem[] }>(
+            `/api/simplyprint/files?search=${encodeURIComponent(searchValue)}`
+          ),
+          fetchJson<{ files: { name: string; fullName: string }[] }>(
+            `/api/local-files?search=${encodeURIComponent(searchValue)}`
+          ),
+        ]);
+
+        const localFiles: FileItem[] = localResult.files.map((file) => ({
+          id: `local-${file.fullName}`,
+          name: file.name,
+          fullName: file.fullName,
+          source: "local",
+        }));
+
+        const combined = [...localFiles, ...remoteResult.files].reduce(
+          (acc: FileItem[], item: FileItem) => {
+            if (!acc.find((existing) => existing.fullName === item.fullName)) {
+              acc.push(item);
+            }
+            return acc;
+          },
+          []
         );
-        setFiles(result.files.slice(0, 8));
+
+        setFiles(combined.slice(0, 8));
       } catch (error) {
         console.error(error);
       }

@@ -497,6 +497,27 @@ app.get("/api/simplyprint/files", async (req: Request, res: Response) => {
   }
 });
 
+app.get("/api/local-files", async (req: Request, res: Response) => {
+  const search = String(req.query.search ?? "").trim().toLowerCase();
+  const cache = getLocalFilesCache();
+  if (!cache) {
+    return res.json({ files: [] });
+  }
+
+  const results: { name: string; fullName: string }[] = [];
+
+  for (const [relative] of cache.byRelative) {
+    if (!search || relative.toLowerCase().includes(search)) {
+      results.push({ name: relative, fullName: relative });
+      if (results.length >= 50) {
+        break;
+      }
+    }
+  }
+
+  return res.json({ files: results });
+});
+
 const testQueueSchema = z.object({
   fileNames: z.array(z.string().min(1)),
   quantity: z.number().int().positive().optional().default(1),
