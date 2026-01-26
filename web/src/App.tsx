@@ -18,6 +18,7 @@ type Mapping = {
   shopifyVariantId: string | null;
   simplyprintFileName?: string | null;
   simplyprintFileNames?: string | null;
+  skipQueue?: boolean | null;
 };
 
 type FileItem = {
@@ -49,32 +50,7 @@ type UnmatchedLineItem = {
   createdAt: string;
 };
 
-type MatchedLineItem = {
-  id: number;
-  orderId: string;
-  orderName: string | null;
-  shopifyProductId: string;
-  shopifyVariantId: string | null;
-  sku: string | null;
-  quantity: number;
-  fileName: string;
-  queuedAt: string;
-};
-
 type HiddenProduct = {
-  id: number;
-  shopifyProductId: string;
-  createdAt: string;
-};
-
-type HiddenVariant = {
-  id: number;
-  shopifyProductId: string;
-  shopifyVariantId: string;
-  createdAt: string;
-};
-
-type QueueExcludedProduct = {
   id: number;
   shopifyProductId: string;
   createdAt: string;
@@ -94,24 +70,14 @@ export default function App() {
   const [queueGroups, setQueueGroups] = useState<QueueGroup[]>([]);
   const [queueGroupId, setQueueGroupId] = useState<number | null>(null);
   const [queueSaving, setQueueSaving] = useState(false);
-  const [queueDryRun, setQueueDryRun] = useState(false);
-  const [queueDryRunSaving, setQueueDryRunSaving] = useState(false);
   const [unmatched, setUnmatched] = useState<UnmatchedLineItem[]>([]);
-  const [matched, setMatched] = useState<MatchedLineItem[]>([]);
-  const [activeTab, setActiveTab] = useState<
-    "mappings" | "unmatched" | "matched"
-  >("mappings");
+  const [activeTab, setActiveTab] = useState<"mappings" | "unmatched">(
+    "mappings"
+  );
   const [mappingFilter, setMappingFilter] = useState<
     "all" | "mapped" | "unmapped"
   >("all");
-  const [showSkipQueueOnly, setShowSkipQueueOnly] = useState(false);
   const [hiddenProductIds, setHiddenProductIds] = useState<Set<string>>(
-    () => new Set()
-  );
-  const [queueExcludedIds, setQueueExcludedIds] = useState<Set<string>>(
-    () => new Set()
-  );
-  const [hiddenVariantKeys, setHiddenVariantKeys] = useState<Set<string>>(
     () => new Set()
   );
   const [showHidden, setShowHidden] = useState(false);
@@ -133,10 +99,6 @@ export default function App() {
         queueSetting,
         unmatchedData,
         hiddenData,
-        excludedData,
-        matchedData,
-        hiddenVariantsData,
-        queueDryRunData,
       ] =
         await Promise.all([
         fetchJson<{ products: ShopifyProduct[] }>("/api/shopify/products"),
@@ -145,10 +107,6 @@ export default function App() {
         fetchJson<{ groupId: number | null }>("/api/settings/queue-group"),
           fetchJson<{ items: UnmatchedLineItem[] }>("/api/unmatched"),
           fetchJson<{ hidden: HiddenProduct[] }>("/api/products/hidden"),
-          fetchJson<{ excluded: QueueExcludedProduct[] }>("/api/products/queue-excluded"),
-          fetchJson<{ items: MatchedLineItem[] }>("/api/matched"),
-          fetchJson<{ hidden: HiddenVariant[] }>("/api/variants/hidden"),
-          fetchJson<{ enabled: boolean }>("/api/settings/queue-dry-run"),
       ]);
 
       const filteredProducts = productData.products
@@ -162,21 +120,9 @@ export default function App() {
       setMappings(mappingData.mappings);
       setQueueGroups(groupData.groups);
       setQueueGroupId(queueSetting.groupId ?? null);
-      setQueueDryRun(queueDryRunData.enabled ?? false);
       setUnmatched(unmatchedData.items);
       setHiddenProductIds(
         new Set(hiddenData.hidden.map((item) => item.shopifyProductId))
-      );
-      setQueueExcludedIds(
-        new Set(excludedData.excluded.map((item) => item.shopifyProductId))
-      );
-      setMatched(matchedData.items);
-      setHiddenVariantKeys(
-        new Set(
-          hiddenVariantsData.hidden.map(
-            (item) => `${item.shopifyProductId}:${item.shopifyVariantId}`
-          )
-        )
       );
     } catch (err) {
       console.error(err);
@@ -208,12 +154,14 @@ export default function App() {
   const upsertMapping = async (
     productId: string,
     variantId: string | null,
-    fileNames: string[]
+    fileNames: string[],
+    skipQueue: boolean
   ) => {
     const payload = {
       productId,
       variantId,
       fileNames,
+      skipQueue,
     };
 
     const result = await fetchJson<{ mapping: Mapping }>("/api/mappings", {
@@ -232,14 +180,6 @@ export default function App() {
         return next;
       }
       return [result.mapping, ...prev];
-    });
-  };
-
-  const testQueueMapping = async (productId: string, variantId: string | null) => {
-    await fetchJson("/api/mappings/test-queue", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ productId, variantId, quantity: 1 }),
     });
   };
 
@@ -263,40 +203,24 @@ export default function App() {
     }
   };
 
-  const saveQueueDryRun = async (enabled: boolean) => {
-    setQueueDryRunSaving(true);
-    try {
-      await fetchJson("/api/settings/queue-dry-run", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ enabled }),
-      });
-      setQueueDryRun(enabled);
-    } finally {
-      setQueueDryRunSaving(false);
-    }
-  };
-
   const queueUnmatched = async (
     itemId: number,
     fileName: string,
     saveMapping: boolean
   ) => {
-    const result = await fetchJson<{ matched?: MatchedLineItem }>(
-      `/api/unmatched/${itemId}/queue`,
-      {
+    await fetchJson(`/api/unmatched/${itemId}/queue`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ fileName, saveMapping }),
-      }
-    );
+    });
 
     setUnmatched((prev: UnmatchedLineItem[]) =>
-      prev.filter((item: UnmatchedLineItem) => item.id !== itemId)
+      prev.map((item: UnmatchedLineItem) =>
+        item.id === itemId
+          ? { ...item, queuedAt: new Date().toISOString(), reason: "Queued manually" }
+          : item
+      )
     );
-    if (result.matched) {
-      setMatched((prev: MatchedLineItem[]) => [result.matched!, ...prev]);
-    }
   };
 
   const deleteUnmatched = async (itemId: number) => {
@@ -320,48 +244,6 @@ export default function App() {
     setHiddenProductIds((prev: Set<string>) => {
       const next = new Set(prev);
       next.delete(productId);
-      return next;
-    });
-  };
-
-  const excludeProductFromQueue = async (productId: string) => {
-    await fetchJson("/api/products/queue-excluded", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ productId }),
-    });
-    setQueueExcludedIds((prev: Set<string>) => new Set(prev).add(productId));
-  };
-
-  const includeProductInQueue = async (productId: string) => {
-    await fetchJson(`/api/products/queue-excluded/${productId}`, {
-      method: "DELETE",
-    });
-    setQueueExcludedIds((prev: Set<string>) => {
-      const next = new Set(prev);
-      next.delete(productId);
-      return next;
-    });
-  };
-
-  const hideVariant = async (productId: string, variantId: string) => {
-    await fetchJson("/api/variants/hidden", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ productId, variantId }),
-    });
-    setHiddenVariantKeys(
-      (prev: Set<string>) => new Set(prev).add(`${productId}:${variantId}`)
-    );
-  };
-
-  const unhideVariant = async (productId: string, variantId: string) => {
-    await fetchJson(`/api/variants/hidden/${productId}/${variantId}`, {
-      method: "DELETE",
-    });
-    setHiddenVariantKeys((prev: Set<string>) => {
-      const next = new Set(prev);
-      next.delete(`${productId}:${variantId}`);
       return next;
     });
   };
@@ -402,12 +284,6 @@ export default function App() {
         >
           Unmatched Orders
         </button>
-        <button
-          className={`tab ${activeTab === "matched" ? "tab--active" : ""}`}
-          onClick={() => setActiveTab("matched")}
-        >
-          Matched Orders
-        </button>
       </div>
 
       {error && <div className="banner banner--error">{error}</div>}
@@ -439,15 +315,6 @@ export default function App() {
                     </option>
                   ))}
                 </select>
-                <label className="checkbox">
-                  <input
-                    type="checkbox"
-                    checked={queueDryRun}
-                    onChange={(event) => saveQueueDryRun(event.target.checked)}
-                    disabled={queueDryRunSaving}
-                  />
-                  Dry run
-                </label>
                 <button className="btn" onClick={saveQueueGroup} disabled={queueSaving}>
                   Save
                 </button>
@@ -471,14 +338,6 @@ export default function App() {
               <label className="checkbox">
                 <input
                   type="checkbox"
-                  checked={showSkipQueueOnly}
-                  onChange={(event) => setShowSkipQueueOnly(event.target.checked)}
-                />
-                Skip queue only
-              </label>
-              <label className="checkbox">
-                <input
-                  type="checkbox"
                   checked={showHidden}
                   onChange={(event) => setShowHidden(event.target.checked)}
                 />
@@ -491,22 +350,11 @@ export default function App() {
             {products
               .map((product: ShopifyProduct) => {
                 const isHidden = hiddenProductIds.has(product.id);
-                const isQueueExcluded = queueExcludedIds.has(product.id);
                 if (isHidden && !showHidden) {
                   return null;
                 }
 
-                if (showSkipQueueOnly && !isQueueExcluded) {
-                  return null;
-                }
-
                 const visibleVariants = product.variants.filter((variant) => {
-                  const isVariantHidden = hiddenVariantKeys.has(
-                    `${product.id}:${variant.id}`
-                  );
-                  if (isVariantHidden && !showHidden) {
-                    return false;
-                  }
                   const hasMapping = !!mappingFor(product.id, variant.id);
                   if (mappingFilter === "mapped") {
                     return hasMapping;
@@ -528,28 +376,14 @@ export default function App() {
                     <h2>{product.title}</h2>
                     <span className="muted">Product ID: {product.id}</span>
                   </div>
-                  <div className="panel__header-actions">
-                    <label className="checkbox">
-                      <input
-                        type="checkbox"
-                        checked={isQueueExcluded}
-                        onChange={(event) =>
-                          event.target.checked
-                            ? excludeProductFromQueue(product.id)
-                            : includeProductInQueue(product.id)
-                        }
-                      />
-                      Skip queue
-                    </label>
-                    <button
-                      className="btn btn--ghost"
-                      onClick={() =>
-                        isHidden ? unhideProduct(product.id) : hideProduct(product.id)
-                      }
-                    >
-                      {isHidden ? "Unhide" : "Hide"}
-                    </button>
-                  </div>
+                  <button
+                    className="btn btn--ghost"
+                    onClick={() =>
+                      isHidden ? unhideProduct(product.id) : hideProduct(product.id)
+                    }
+                  >
+                    {isHidden ? "Unhide" : "Hide"}
+                  </button>
                 </div>
 
                 <div className="variant-list">
@@ -564,20 +398,11 @@ export default function App() {
                       }
                       productId={product.id}
                       variantId={variant.id}
-                      isHidden={hiddenVariantKeys.has(
-                        `${product.id}:${variant.id}`
-                      )}
-                      onToggleHidden={(shouldHide) =>
-                        shouldHide
-                          ? hideVariant(product.id, variant.id)
-                          : unhideVariant(product.id, variant.id)
-                      }
                       current={mappingFor(product.id, variant.id)}
                       suggestQuery={
                         variant.sku ?? `${product.title} ${variant.title}`
                       }
                       onSave={upsertMapping}
-                      onTestQueue={testQueueMapping}
                       onDelete={deleteMapping}
                     />
                   ))}
@@ -587,7 +412,7 @@ export default function App() {
           })}
           </div>
         </>
-      ) : activeTab === "unmatched" ? (
+      ) : (
         <div className="panel">
           {unmatched.length === 0 ? (
             <div className="muted">No unmatched orders.</div>
@@ -604,18 +429,6 @@ export default function App() {
             </div>
           )}
         </div>
-      ) : (
-        <div className="panel">
-          {matched.length === 0 ? (
-            <div className="muted">No matched orders yet.</div>
-          ) : (
-            <div className="unmatched-list">
-              {matched.map((item) => (
-                <MatchedRow key={item.id} item={item} />
-              ))}
-            </div>
-          )}
-        </div>
       )}
     </div>
   );
@@ -626,16 +439,14 @@ type MappingRowProps = {
   subtitle?: string;
   productId: string;
   variantId: string | null;
-  isHidden: boolean;
-  onToggleHidden: (shouldHide: boolean) => void;
   current: Mapping | null;
   suggestQuery?: string;
   onSave: (
     productId: string,
     variantId: string | null,
-    fileNames: string[]
+    fileNames: string[],
+    skipQueue: boolean
   ) => void;
-  onTestQueue: (productId: string, variantId: string | null) => void;
   onDelete: (id: number) => void;
 };
 
@@ -644,18 +455,18 @@ function MappingRow({
   subtitle,
   productId,
   variantId,
-  isHidden,
-  onToggleHidden,
   current,
   suggestQuery,
   onSave,
-  onTestQueue,
   onDelete,
 }: MappingRowProps) {
   const initialFiles = getMappingFiles(current);
   const [fileNames, setFileNames] = useState<string[]>(initialFiles);
   const [saving, setSaving] = useState(false);
   const [files, setFiles] = useState<FileItem[]>([]);
+  const [skipQueue, setSkipQueue] = useState<boolean>(
+    Boolean(current?.skipQueue)
+  );
   const [suggestMessage, setSuggestMessage] = useState<string | null>(null);
   const [suggested, setSuggested] = useState<FileItem[]>([]);
   const [selectedSuggestion, setSelectedSuggestion] = useState<string>("");
@@ -663,7 +474,8 @@ function MappingRow({
 
   useEffect(() => {
     setFileNames(getMappingFiles(current));
-  }, [current?.simplyprintFileName, current?.simplyprintFileNames]);
+    setSkipQueue(Boolean(current?.skipQueue));
+  }, [current?.simplyprintFileName, current?.simplyprintFileNames, current?.skipQueue]);
 
   useEffect(() => {
     const searchValue = activeSearch.trim();
@@ -713,7 +525,7 @@ function MappingRow({
 
     setSaving(true);
     try {
-      await onSave(productId, variantId, cleaned);
+      await onSave(productId, variantId, cleaned, skipQueue);
     } finally {
       setSaving(false);
     }
@@ -727,15 +539,6 @@ function MappingRow({
     setSaving(true);
     try {
       await onDelete(current.id);
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const handleTestQueue = async () => {
-    setSaving(true);
-    try {
-      await onTestQueue(productId, variantId);
     } finally {
       setSaving(false);
     }
@@ -788,14 +591,6 @@ function MappingRow({
       <div>
         <div className="mapping-row__title">{label}</div>
         {subtitle && <div className="muted">{subtitle}</div>}
-        <label className="checkbox checkbox--inline">
-          <input
-            type="checkbox"
-            checked={isHidden}
-            onChange={(event) => onToggleHidden(event.target.checked)}
-          />
-          Hide variant
-        </label>
       </div>
       <div className="mapping-row__actions">
         <div className="mapping-row__files">
@@ -828,11 +623,16 @@ function MappingRow({
             Add file
           </button>
         </div>
+        <label className="checkbox mapping-row__checkbox">
+          <input
+            type="checkbox"
+            checked={skipQueue}
+            onChange={(event) => setSkipQueue(event.target.checked)}
+          />
+          Skip queue
+        </label>
         <button className="btn btn--ghost" onClick={handleSuggest} disabled={saving}>
           Suggest
-        </button>
-        <button className="btn btn--ghost" onClick={handleTestQueue} disabled={saving}>
-          Test queue
         </button>
         <button className="btn" onClick={handleSave} disabled={saving}>
           {current ? "Update" : "Save"}
@@ -987,29 +787,6 @@ function UnmatchedRow({ item, onQueue, onDelete }: UnmatchedRowProps) {
         >
           Dismiss
         </button>
-      </div>
-    </div>
-  );
-}
-
-type MatchedRowProps = {
-  item: MatchedLineItem;
-};
-
-function MatchedRow({ item }: MatchedRowProps) {
-  return (
-    <div className="unmatched-row">
-      <div className="unmatched-row__info">
-        <div className="unmatched-row__title">
-          Order {item.orderName ?? item.orderId}
-        </div>
-        <div className="muted">
-          Product {item.shopifyProductId}
-          {item.shopifyVariantId ? ` • Variant ${item.shopifyVariantId}` : ""}
-          {item.sku ? ` • SKU ${item.sku}` : ""} • Qty {item.quantity}
-        </div>
-        <div className="muted">File: {item.fileName}</div>
-        <div className="muted">Queued at: {item.queuedAt}</div>
       </div>
     </div>
   );

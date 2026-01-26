@@ -111,12 +111,6 @@ body {
   margin-bottom: 16px;
 }
 
-.panel__header-actions {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
 .queue-panel {
   margin-bottom: 24px;
 }
@@ -274,8 +268,8 @@ body {
   color: var(--muted);
 }
 
-.checkbox--inline {
-  margin-top: 6px;
+.mapping-row__checkbox {
+  justify-self: start;
 }
 
 .btn {

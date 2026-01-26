@@ -8,7 +8,6 @@ import { fileURLToPath } from "url";
 import axios from "axios";
 import { PrismaClient } from "@prisma/client";
 import { z } from "zod";
-import { createClient } from "redis";
 
 dotenv.config();
 
@@ -18,6 +17,12 @@ const prisma = new PrismaClient();
 const PORT = Number(process.env.PORT ?? 4000);
 
 const SHOPIFY_SHOP_DOMAIN = process.env.SHOPIFY_SHOP_DOMAIN;
+const SHOPIFY_APP_API_KEY = process.env.SHOPIFY_APP_API_KEY;
+const SHOPIFY_APP_API_SECRET = process.env.SHOPIFY_APP_API_SECRET;
+const SHOPIFY_APP_URL = process.env.SHOPIFY_APP_URL;
+const SHOPIFY_APP_SCOPES =
+  process.env.SHOPIFY_APP_SCOPES ?? "read_products,read_orders";
+const SHOPIFY_APP_ACCESS_TOKEN = process.env.SHOPIFY_APP_ACCESS_TOKEN;
 const SHOPIFY_ADMIN_API_TOKEN = process.env.SHOPIFY_ADMIN_API_TOKEN;
 const SHOPIFY_API_VERSION = process.env.SHOPIFY_API_VERSION ?? "2023-10";
 const SHOPIFY_WEBHOOK_SECRET = process.env.SHOPIFY_WEBHOOK_SECRET;
@@ -26,20 +31,6 @@ const SIMPLYPRINT_COMPANY_ID = process.env.SIMPLYPRINT_COMPANY_ID;
 const SIMPLYPRINT_API_KEY = process.env.SIMPLYPRINT_API_KEY;
 const SIMPLYPRINT_QUEUE_GROUP_NAME =
   process.env.SIMPLYPRINT_QUEUE_GROUP_NAME ?? "Shopify";
-const SIMPLYPRINT_RATE_LIMIT_PER_SECOND = Number.isFinite(
-  Number(process.env.SIMPLYPRINT_RATE_LIMIT_PER_SECOND)
-)
-  ? Number(process.env.SIMPLYPRINT_RATE_LIMIT_PER_SECOND)
-  : 5;
-
-const REDIS_URL = process.env.REDIS_URL;
-const REDIS_HOST = process.env.REDIS_HOST;
-const REDIS_PORT = Number(process.env.REDIS_PORT ?? 6379);
-const REDIS_PASSWORD = process.env.REDIS_PASSWORD;
-const REDIS_DB = Number(process.env.REDIS_DB ?? 0);
-const SIMPLYPRINT_FILE_CACHE_TTL_SECONDS = Number(
-  process.env.SIMPLYPRINT_FILE_CACHE_TTL_SECONDS ?? 60 * 60 * 24
-);
 
 const BASIC_AUTH_USER = process.env.BASIC_AUTH_USER;
 const BASIC_AUTH_PASS = process.env.BASIC_AUTH_PASS;
@@ -115,9 +106,6 @@ app.post(
         ? payload.line_items
         : [];
 
-      const excludedProductIds = await getQueueExcludedProductIds();
-      const hiddenVariantKeys = await getHiddenVariantKeys();
-
       for (const item of lineItems) {
         const productId = String(item?.product_id ?? "");
         const variantId = item?.variant_id ? String(item.variant_id) : null;
@@ -125,22 +113,6 @@ app.post(
 
         if (!productId) {
           console.log("Skipped line item without product_id");
-          continue;
-        }
-
-        if (excludedProductIds.has(productId)) {
-          console.log(
-            "Skipped queueing for excluded product",
-            JSON.stringify({ productId, variantId, sku: item?.sku ?? null })
-          );
-          continue;
-        }
-
-        if (variantId && hiddenVariantKeys.has(`${productId}:${variantId}`)) {
-          console.log(
-            "Skipped queueing for hidden variant",
-            JSON.stringify({ productId, variantId, sku: item?.sku ?? null })
-          );
           continue;
         }
 
@@ -164,6 +136,14 @@ app.post(
           continue;
         }
 
+        if (mapping.skipQueue) {
+          console.log(
+            "Skipping queue for product",
+            JSON.stringify({ productId, variantId, sku: item?.sku ?? null })
+          );
+          continue;
+        }
+
         const filesToQueue = normalizeMappingFiles(mapping);
 
         for (const fileName of filesToQueue) {
@@ -178,17 +158,6 @@ app.post(
           );
           try {
             await addToSimplyPrintQueue(fileName, quantity);
-            if (orderId) {
-              await recordMatchedLineItem({
-                orderId,
-                orderName,
-                productId,
-                variantId,
-                sku: item?.sku ? String(item.sku) : null,
-                quantity,
-                fileName,
-              });
-            }
           } catch (error) {
             console.error("Failed to queue file", error);
             if (orderId) {
@@ -216,37 +185,130 @@ app.post(
 
 app.use(express.json());
 
-app.get("/api/health", async (_req: Request, res: Response) => {
-  await getRedisClient();
-  res.json({ status: "ok", redis: redisStatus });
+app.get("/api/health", (_req: Request, res: Response) => {
+  res.json({ status: "ok" });
+});
+
+app.get("/api/shopify/auth", async (req: Request, res: Response) => {
+  try {
+    if (!SHOPIFY_APP_API_KEY || !SHOPIFY_APP_API_SECRET || !SHOPIFY_APP_URL) {
+      return res.status(500).json({ error: "Shopify app credentials missing" });
+    }
+
+    const shopFromQuery = req.query.shop ? String(req.query.shop) : "";
+    const shop = shopFromQuery || SHOPIFY_SHOP_DOMAIN || "";
+    if (!shop) {
+      return res.status(400).json({ error: "Missing shop domain" });
+    }
+
+    if (SHOPIFY_SHOP_DOMAIN && shop !== SHOPIFY_SHOP_DOMAIN) {
+      return res.status(400).json({ error: "Shop domain mismatch" });
+    }
+
+    const appUrl = SHOPIFY_APP_URL.replace(/\/+$/, "");
+    const redirectUri = `${appUrl}/api/shopify/callback`;
+    const state = crypto.randomBytes(16).toString("hex");
+
+    await prisma.setting.upsert({
+      where: { key: "shopifyOauthState" },
+      update: { value: state },
+      create: { key: "shopifyOauthState", value: state },
+    });
+
+    const authorizeUrl =
+      `https://${shop}/admin/oauth/authorize` +
+      `?client_id=${encodeURIComponent(SHOPIFY_APP_API_KEY)}` +
+      `&scope=${encodeURIComponent(SHOPIFY_APP_SCOPES)}` +
+      `&redirect_uri=${encodeURIComponent(redirectUri)}` +
+      `&state=${encodeURIComponent(state)}`;
+
+    return res.redirect(authorizeUrl);
+  } catch (error) {
+    console.error("Failed to start Shopify OAuth", error);
+    return res.status(500).json({ error: "Failed to start Shopify OAuth" });
+  }
+});
+
+app.get("/api/shopify/callback", async (req: Request, res: Response) => {
+  try {
+    if (!SHOPIFY_APP_API_KEY || !SHOPIFY_APP_API_SECRET || !SHOPIFY_APP_URL) {
+      return res.status(500).json({ error: "Shopify app credentials missing" });
+    }
+
+    const shop = req.query.shop ? String(req.query.shop) : "";
+    const code = req.query.code ? String(req.query.code) : "";
+    const state = req.query.state ? String(req.query.state) : "";
+    const hmac = req.query.hmac ? String(req.query.hmac) : "";
+
+    if (!shop || !code || !state || !hmac) {
+      return res.status(400).json({ error: "Missing OAuth parameters" });
+    }
+
+    if (SHOPIFY_SHOP_DOMAIN && shop !== SHOPIFY_SHOP_DOMAIN) {
+      return res.status(400).json({ error: "Shop domain mismatch" });
+    }
+
+    const storedState = await prisma.setting.findUnique({
+      where: { key: "shopifyOauthState" },
+    });
+
+    if (!storedState?.value || storedState.value !== state) {
+      return res.status(401).json({ error: "Invalid OAuth state" });
+    }
+
+    if (!verifyShopifyHmac(req.query, SHOPIFY_APP_API_SECRET)) {
+      return res.status(401).json({ error: "Invalid OAuth signature" });
+    }
+
+    const tokenUrl = `https://${shop}/admin/oauth/access_token`;
+    const tokenResponse = await axios.post(tokenUrl, {
+      client_id: SHOPIFY_APP_API_KEY,
+      client_secret: SHOPIFY_APP_API_SECRET,
+      code,
+    });
+
+    const accessToken = tokenResponse.data?.access_token;
+    if (!accessToken) {
+      return res.status(500).json({ error: "Missing access token" });
+    }
+
+    await prisma.setting.upsert({
+      where: { key: "shopifyAccessToken" },
+      update: { value: accessToken },
+      create: { key: "shopifyAccessToken", value: accessToken },
+    });
+
+    const appUrl = SHOPIFY_APP_URL.replace(/\/+$/, "");
+    return res.redirect(appUrl);
+  } catch (error) {
+    console.error("Shopify OAuth callback failed", error);
+    return res.status(500).json({ error: "Shopify OAuth failed" });
+  }
 });
 
 app.get("/api/shopify/products", async (_req: Request, res: Response) => {
   try {
-    ensureShopifyEnv();
+    const { shopDomain, accessToken } = await ensureShopifyEnv();
 
-    const url = `https://${SHOPIFY_SHOP_DOMAIN}/admin/api/${SHOPIFY_API_VERSION}/products.json`;
+    const url = `https://${shopDomain}/admin/api/${SHOPIFY_API_VERSION}/products.json`;
     const response = await axios.get(url, {
       headers: {
-        "X-Shopify-Access-Token": SHOPIFY_ADMIN_API_TOKEN,
+        "X-Shopify-Access-Token": accessToken,
       },
       params: {
         limit: 250,
-        status: "active",
       },
     });
 
-    const products = (response.data?.products ?? [])
-      .filter((product: any) => String(product?.status ?? "") === "active")
-      .map((product: any) => ({
-        id: String(product.id),
-        title: product.title,
-        variants: (product.variants ?? []).map((variant: any) => ({
-          id: String(variant.id),
-          title: variant.title,
-          sku: variant.sku,
-        })),
-      }));
+    const products = (response.data?.products ?? []).map((product: any) => ({
+      id: String(product.id),
+      title: product.title,
+      variants: (product.variants ?? []).map((variant: any) => ({
+        id: String(variant.id),
+        title: variant.title,
+        sku: variant.sku,
+      })),
+    }));
 
     res.json({ products });
   } catch (error) {
@@ -269,27 +331,8 @@ app.get("/api/products/hidden", async (_req: Request, res: Response) => {
   res.json({ hidden });
 });
 
-app.get("/api/variants/hidden", async (_req: Request, res: Response) => {
-  const hidden = await prisma.hiddenVariant.findMany({
-    orderBy: { createdAt: "desc" },
-  });
-  res.json({ hidden });
-});
-
-app.get("/api/products/queue-excluded", async (_req: Request, res: Response) => {
-  const excluded = await prisma.queueExcludedProduct.findMany({
-    orderBy: { createdAt: "desc" },
-  });
-  res.json({ excluded });
-});
-
 const hiddenProductSchema = z.object({
   productId: z.string().min(1),
-});
-
-const hiddenVariantSchema = z.object({
-  productId: z.string().min(1),
-  variantId: z.string().min(1),
 });
 
 app.post("/api/products/hidden", async (req: Request, res: Response) => {
@@ -323,101 +366,17 @@ app.delete(
   }
 );
 
-app.post("/api/variants/hidden", async (req: Request, res: Response) => {
-  try {
-    const { productId, variantId } = hiddenVariantSchema.parse(req.body);
-    const record = await prisma.hiddenVariant.upsert({
-      where: {
-        shopifyProductId_shopifyVariantId: {
-          shopifyProductId: productId,
-          shopifyVariantId: variantId,
-        },
-      },
-      update: {},
-      create: { shopifyProductId: productId, shopifyVariantId: variantId },
-    });
-    res.json({ hidden: record });
-  } catch (error) {
-    console.error("Failed to hide variant", error);
-    res.status(400).json({ error: "Invalid variant payload" });
-  }
-});
-
-app.delete(
-  "/api/variants/hidden/:productId/:variantId",
-  async (req: Request, res: Response) => {
-    const productId = String(req.params.productId ?? "");
-    const variantId = String(req.params.variantId ?? "");
-    if (!productId || !variantId) {
-      return res.status(400).json({ error: "Invalid variant id" });
-    }
-
-    await prisma.hiddenVariant
-      .delete({
-        where: {
-          shopifyProductId_shopifyVariantId: {
-            shopifyProductId: productId,
-            shopifyVariantId: variantId,
-          },
-        },
-      })
-      .catch(() => undefined);
-
-    return res.json({ status: "deleted" });
-  }
-);
-
-const queueExcludedSchema = z.object({
-  productId: z.string().min(1),
-});
-
-app.post("/api/products/queue-excluded", async (req: Request, res: Response) => {
-  try {
-    const { productId } = queueExcludedSchema.parse(req.body);
-    const record = await prisma.queueExcludedProduct.upsert({
-      where: { shopifyProductId: productId },
-      update: {},
-      create: { shopifyProductId: productId },
-    });
-    res.json({ excluded: record });
-  } catch (error) {
-    console.error("Failed to exclude product", error);
-    res.status(400).json({ error: "Invalid product id" });
-  }
-});
-
-app.delete(
-  "/api/products/queue-excluded/:productId",
-  async (req: Request, res: Response) => {
-    const productId = String(req.params.productId ?? "");
-    if (!productId) {
-      return res.status(400).json({ error: "Invalid product id" });
-    }
-
-    await prisma.queueExcludedProduct
-      .delete({ where: { shopifyProductId: productId } })
-      .catch(() => undefined);
-
-    return res.json({ status: "deleted" });
-  }
-);
-
 const mappingSchema = z.object({
   productId: z.string().min(1),
   variantId: z.string().nullable().optional(),
   fileName: z.string().min(1).optional(),
   fileNames: z.array(z.string().min(1)).optional(),
-});
-
-const testQueueSchema = z.object({
-  productId: z.string().min(1),
-  variantId: z.string().nullable().optional(),
-  quantity: z.number().int().positive().optional().default(1),
+  skipQueue: z.boolean().optional(),
 });
 
 app.post("/api/mappings", async (req: Request, res: Response) => {
   try {
-    const { productId, variantId, fileName, fileNames } =
+    const { productId, variantId, fileName, fileNames, skipQueue } =
       mappingSchema.parse(req.body);
     const normalizedVariantId = variantId ?? null;
     const normalizedFiles = (fileNames ?? (fileName ? [fileName] : [])).filter(
@@ -442,6 +401,7 @@ app.post("/api/mappings", async (req: Request, res: Response) => {
           data: {
             simplyprintFileNames: serializedFiles,
             simplyprintFileName: normalizedFiles[0],
+            skipQueue: skipQueue ?? existing.skipQueue,
           },
         })
       : await prisma.mapping.create({
@@ -450,6 +410,7 @@ app.post("/api/mappings", async (req: Request, res: Response) => {
             shopifyVariantId: normalizedVariantId,
             simplyprintFileNames: serializedFiles,
             simplyprintFileName: normalizedFiles[0],
+            skipQueue: skipQueue ?? false,
           },
         });
 
@@ -457,30 +418,6 @@ app.post("/api/mappings", async (req: Request, res: Response) => {
   } catch (error) {
     console.error("Failed to save mapping", error);
     res.status(400).json({ error: "Invalid mapping payload" });
-  }
-});
-
-app.post("/api/mappings/test-queue", async (req: Request, res: Response) => {
-  try {
-    const { productId, variantId, quantity } = testQueueSchema.parse(req.body);
-    const mapping = await findMapping(productId, variantId ?? null);
-    if (!mapping) {
-      return res.status(404).json({ error: "Mapping not found" });
-    }
-
-    const filesToQueue = normalizeMappingFiles(mapping);
-    if (filesToQueue.length === 0) {
-      return res.status(400).json({ error: "No files to queue" });
-    }
-
-    for (const fileName of filesToQueue) {
-      await addToSimplyPrintQueue(fileName, quantity);
-    }
-
-    res.json({ status: "queued", files: filesToQueue, quantity });
-  } catch (error) {
-    console.error("Failed to test queue mapping", error);
-    res.status(400).json({ error: "Failed to test queue mapping" });
   }
 });
 
@@ -499,17 +436,15 @@ app.get("/api/simplyprint/files", async (req: Request, res: Response) => {
     ensureSimplyPrintEnv();
     const search = String(req.query.search ?? "").trim();
 
-    const response = await withSimplyPrintRateLimit(() =>
-      axios.get(`${simplyPrintBaseUrl()}/files/GetFiles`, {
-        headers: {
-          "X-API-KEY": SIMPLYPRINT_API_KEY,
-        },
-        params: {
-          search: search || undefined,
-          global_search: true,
-        },
-      })
-    );
+    const response = await axios.get(`${simplyPrintBaseUrl()}/files/GetFiles`, {
+      headers: {
+        "X-API-KEY": SIMPLYPRINT_API_KEY,
+      },
+      params: {
+        search: search || undefined,
+        global_search: true,
+      },
+    });
 
     const files = (response.data?.files ?? []).map((file: any) => ({
       id: file.id,
@@ -550,17 +485,15 @@ app.get("/api/simplyprint/suggest", async (req: Request, res: Response) => {
 
     const responses = await Promise.all(
       tokens.map((token) =>
-        withSimplyPrintRateLimit(() =>
-          axios.get(`${simplyPrintBaseUrl()}/files/GetFiles`, {
-            headers: {
-              "X-API-KEY": SIMPLYPRINT_API_KEY,
-            },
-            params: {
-              search: token,
-              global_search: true,
-            },
-          })
-        )
+        axios.get(`${simplyPrintBaseUrl()}/files/GetFiles`, {
+          headers: {
+            "X-API-KEY": SIMPLYPRINT_API_KEY,
+          },
+          params: {
+            search: token,
+            global_search: true,
+          },
+        })
       )
     );
 
@@ -602,13 +535,11 @@ app.get("/api/simplyprint/suggest", async (req: Request, res: Response) => {
 app.get("/api/simplyprint/queue-groups", async (_req: Request, res: Response) => {
   try {
     ensureSimplyPrintEnv();
-    const response = await withSimplyPrintRateLimit(() =>
-      axios.get(`${simplyPrintBaseUrl()}/queue/groups/Get`, {
-        headers: {
-          "X-API-KEY": SIMPLYPRINT_API_KEY,
-        },
-      })
-    );
+    const response = await axios.get(`${simplyPrintBaseUrl()}/queue/groups/Get`, {
+      headers: {
+        "X-API-KEY": SIMPLYPRINT_API_KEY,
+      },
+    });
 
     res.json({ groups: response.data?.list ?? [] });
   } catch (error) {
@@ -620,13 +551,6 @@ app.get("/api/simplyprint/queue-groups", async (_req: Request, res: Response) =>
 app.get("/api/unmatched", async (_req: Request, res: Response) => {
   const items = await prisma.unmatchedLineItem.findMany({
     orderBy: { createdAt: "desc" },
-  });
-  res.json({ items });
-});
-
-app.get("/api/matched", async (_req: Request, res: Response) => {
-  const items = await prisma.matchedLineItem.findMany({
-    orderBy: { queuedAt: "desc" },
   });
   res.json({ items });
 });
@@ -678,18 +602,12 @@ app.post("/api/unmatched/:id/queue", async (req: Request, res: Response) => {
     }
 
     await addToSimplyPrintQueue(payload.fileName, item.quantity);
-    const matched = await recordMatchedLineItem({
-      orderId: item.orderId,
-      orderName: item.orderName,
-      productId: item.shopifyProductId,
-      variantId: item.shopifyVariantId,
-      sku: item.sku,
-      quantity: item.quantity,
-      fileName: payload.fileName,
+    await prisma.unmatchedLineItem.update({
+      where: { id },
+      data: { queuedAt: new Date(), reason: "Queued manually" },
     });
-    await prisma.unmatchedLineItem.delete({ where: { id } });
 
-    res.json({ status: "queued", matched });
+    res.json({ status: "queued" });
   } catch (error) {
     console.error("Failed to queue unmatched item", error);
     res.status(400).json({ error: "Failed to queue unmatched item" });
@@ -713,20 +631,8 @@ app.get("/api/settings/queue-group", async (_req: Request, res: Response) => {
   res.json({ groupId: Number.isFinite(groupId) ? groupId : null });
 });
 
-app.get("/api/settings/queue-dry-run", async (_req: Request, res: Response) => {
-  const setting = await prisma.setting.findUnique({
-    where: { key: "simplyprintQueueDryRun" },
-  });
-  const enabled = setting?.value === "true";
-  res.json({ enabled });
-});
-
 const queueGroupSchema = z.object({
   groupId: z.number().nullable(),
-});
-
-const queueDryRunSchema = z.object({
-  enabled: z.boolean(),
 });
 
 app.post("/api/settings/queue-group", async (req: Request, res: Response) => {
@@ -757,23 +663,6 @@ app.post("/api/settings/queue-group", async (req: Request, res: Response) => {
   }
 });
 
-app.post("/api/settings/queue-dry-run", async (req: Request, res: Response) => {
-  try {
-    const { enabled } = queueDryRunSchema.parse(req.body);
-    await prisma.setting.upsert({
-      where: { key: "simplyprintQueueDryRun" },
-      update: { value: enabled ? "true" : "false" },
-      create: { key: "simplyprintQueueDryRun", value: enabled ? "true" : "false" },
-    });
-    cachedQueueDryRun = enabled;
-    cachedQueueDryRunAt = Date.now();
-    res.json({ enabled });
-  } catch (error) {
-    console.error("Failed to save dry run setting", error);
-    res.status(400).json({ error: "Invalid dry run setting" });
-  }
-});
-
 const webDistPath = path.resolve(__dirname, "../../web/dist");
 if (fs.existsSync(webDistPath)) {
   app.use(express.static(webDistPath));
@@ -786,10 +675,72 @@ app.listen(PORT, () => {
   console.log(`Server listening on port ${PORT}`);
 });
 
-function ensureShopifyEnv() {
-  if (!SHOPIFY_SHOP_DOMAIN || !SHOPIFY_ADMIN_API_TOKEN) {
-    throw new Error("Shopify environment variables are missing");
+async function ensureShopifyEnv() {
+  if (!SHOPIFY_SHOP_DOMAIN) {
+    throw new Error("Shopify shop domain is missing");
   }
+
+  const accessToken = await resolveShopifyAccessToken();
+  if (!accessToken) {
+    throw new Error("Shopify access token is missing");
+  }
+
+  return { shopDomain: SHOPIFY_SHOP_DOMAIN, accessToken };
+}
+
+async function resolveShopifyAccessToken(): Promise<string | null> {
+  if (SHOPIFY_ADMIN_API_TOKEN) {
+    return SHOPIFY_ADMIN_API_TOKEN;
+  }
+
+  if (SHOPIFY_APP_ACCESS_TOKEN) {
+    return SHOPIFY_APP_ACCESS_TOKEN;
+  }
+
+  const setting = await prisma.setting.findUnique({
+    where: { key: "shopifyAccessToken" },
+  });
+
+  return setting?.value ?? null;
+}
+
+function verifyShopifyHmac(
+  query: Request["query"],
+  secret: string
+): boolean {
+  const provided = query.hmac ? String(query.hmac) : "";
+  if (!provided) {
+    return false;
+  }
+
+  const params = new URLSearchParams();
+  Object.keys(query)
+    .sort()
+    .forEach((key) => {
+      if (key === "hmac" || key === "signature") {
+        return;
+      }
+      const value = query[key];
+      if (Array.isArray(value)) {
+        params.append(key, value.join(","));
+      } else if (value !== undefined) {
+        params.append(key, String(value));
+      }
+    });
+
+  const message = params.toString();
+  const digest = crypto
+    .createHmac("sha256", secret)
+    .update(message)
+    .digest("hex");
+
+  const digestBuffer = Buffer.from(digest, "utf8");
+  const providedBuffer = Buffer.from(provided, "utf8");
+  if (digestBuffer.length !== providedBuffer.length) {
+    return false;
+  }
+
+  return crypto.timingSafeEqual(digestBuffer, providedBuffer);
 }
 
 function ensureSimplyPrintEnv() {
@@ -846,22 +797,6 @@ async function recordUnmatchedLineItem(input: {
   });
 }
 
-async function getQueueExcludedProductIds() {
-  const excluded = await prisma.queueExcludedProduct.findMany({
-    select: { shopifyProductId: true },
-  });
-  return new Set(excluded.map((item) => item.shopifyProductId));
-}
-
-async function getHiddenVariantKeys() {
-  const hidden = await prisma.hiddenVariant.findMany({
-    select: { shopifyProductId: true, shopifyVariantId: true },
-  });
-  return new Set(
-    hidden.map((item) => `${item.shopifyProductId}:${item.shopifyVariantId}`)
-  );
-}
-
 function normalizeMappingFiles(mapping: any): string[] {
   let files: string[] = [];
   if (typeof mapping?.simplyprintFileNames === "string") {
@@ -878,34 +813,24 @@ function normalizeMappingFiles(mapping: any): string[] {
   const legacy = mapping?.simplyprintFileName
     ? [String(mapping.simplyprintFileName)]
     : [];
-  const combined = [...files, ...legacy]
+
+  const merged = [...files, ...legacy]
     .map((name) => String(name).trim())
     .filter((name) => name.length > 0);
 
   const seen = new Set<string>();
-  const unique: string[] = [];
-  for (const name of combined) {
-    const key = name.toLowerCase();
-    if (!seen.has(key)) {
-      seen.add(key);
-      unique.push(name);
+  return merged.filter((name) => {
+    const key = normalizeText(name);
+    if (seen.has(key)) {
+      return false;
     }
-  }
-  return unique;
+    seen.add(key);
+    return true;
+  });
 }
 
 let cachedQueueGroupId: number | null = null;
 let cachedQueueGroupAt = 0;
-let cachedQueueDryRun: boolean | null = null;
-let cachedQueueDryRunAt = 0;
-
-let simplyPrintLastRequestAt = 0;
-let simplyPrintRequestChain: Promise<unknown> = Promise.resolve();
-
-type RedisClient = ReturnType<typeof createClient>;
-let redisClientPromise: Promise<RedisClient> | null = null;
-let redisClientInstance: RedisClient | null = null;
-let redisStatus: "disabled" | "connecting" | "connected" | "error" = "disabled";
 
 async function getQueueGroupId() {
   if (cachedQueueGroupId !== null && Date.now() - cachedQueueGroupAt < 5 * 60_000) {
@@ -922,13 +847,11 @@ async function getQueueGroupId() {
     return cachedQueueGroupId;
   }
 
-  const response = (await withSimplyPrintRateLimit(() =>
-    axios.get(`${simplyPrintBaseUrl()}/queue/groups/Get`, {
-      headers: {
-        "X-API-KEY": SIMPLYPRINT_API_KEY,
-      },
-    })
-  )) as any;
+  const response = await axios.get(`${simplyPrintBaseUrl()}/queue/groups/Get`, {
+    headers: {
+      "X-API-KEY": SIMPLYPRINT_API_KEY,
+    },
+  });
 
   const groups = response.data?.list ?? [];
   const match = groups.find(
@@ -942,392 +865,70 @@ async function getQueueGroupId() {
   return cachedQueueGroupId;
 }
 
-async function getQueueDryRun() {
-  if (cachedQueueDryRun !== null && Date.now() - cachedQueueDryRunAt < 5 * 60_000) {
-    return cachedQueueDryRun;
-  }
-
-  const setting = await prisma.setting.findUnique({
-    where: { key: "simplyprintQueueDryRun" },
-  });
-  cachedQueueDryRun = setting?.value === "true";
-  cachedQueueDryRunAt = Date.now();
-  return cachedQueueDryRun;
-}
-
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function withSimplyPrintRateLimit<T>(fn: () => Promise<T>) {
-  const minInterval = Math.max(1, Math.floor(1000 / Math.max(1, SIMPLYPRINT_RATE_LIMIT_PER_SECOND)));
-  simplyPrintRequestChain = simplyPrintRequestChain
-    .catch(() => undefined)
-    .then(async () => {
-      const now = Date.now();
-      const waitFor = Math.max(0, minInterval - (now - simplyPrintLastRequestAt));
-      if (waitFor > 0) {
-        await sleep(waitFor);
-      }
-      try {
-        return await fn();
-      } finally {
-        simplyPrintLastRequestAt = Date.now();
-      }
-    });
-
-  return simplyPrintRequestChain as Promise<T>;
-}
-
-async function getRedisClient(): Promise<RedisClient | null> {
-  const hasRedisConfig =
-    !!REDIS_URL ||
-    !!REDIS_HOST ||
-    !!REDIS_PASSWORD ||
-    !!process.env.REDIS_DB ||
-    !!process.env.REDIS_PORT;
-
-  if (!hasRedisConfig) {
-    redisStatus = "disabled";
-    return null;
-  }
-
-  if (redisClientInstance?.isOpen) {
-    return redisClientInstance;
-  }
-
-  if (redisClientPromise) {
-    return redisClientPromise;
-  }
-
-  const client = REDIS_URL
-    ? createClient({
-        url: REDIS_URL,
-        socket: {
-          reconnectStrategy: (retries: number) => Math.min(1000, 50 * (retries + 1)),
-        },
-        password: REDIS_PASSWORD,
-        database: REDIS_DB,
-      })
-    : createClient({
-        socket: {
-          host: REDIS_HOST ?? "127.0.0.1",
-          port: REDIS_PORT,
-          reconnectStrategy: (retries: number) =>
-            Math.min(1000, 50 * (retries + 1)),
-        },
-        password: REDIS_PASSWORD,
-        database: REDIS_DB,
-      });
-
-  client.on("error", (error: unknown) => {
-    console.error("Redis error", error);
-    redisStatus = "error";
-  });
-
-  client.on("connect", () => {
-    // connection handshake started
-    redisStatus = "connecting";
-  });
-
-  client.on("ready", () => {
-    // fully ready to use
-    redisStatus = "connected";
-  });
-
-  client.on("reconnecting", (delay: number) => {
-    redisStatus = "connecting";
-    console.warn("Redis reconnecting, delay(ms):", delay);
-  });
-
-  client.on("end", () => {
-    redisStatus = "error";
-    redisClientPromise = null;
-    redisClientInstance = null;
-  });
-
-  redisStatus = "connecting";
-  redisClientPromise = client.connect().then(() => {
-    redisStatus = "connected";
-    redisClientInstance = client;
-    return client;
-  });
-
-  try {
-    return await redisClientPromise;
-  } catch (error) {
-    console.error("Failed to connect to Redis", error);
-    redisStatus = "error";
-    redisClientPromise = null;
-    redisClientInstance = null;
-    return null;
-  }
-}
-
-async function getCachedSimplyPrintFileId(cacheKey: string): Promise<string | null> {
-  try {
-    const client = await getRedisClient();
-    if (!client) {
-      return null;
-    }
-    const value = await client.get(cacheKey);
-    return value && value.trim().length > 0 ? value : null;
-  } catch (error) {
-    console.error("Failed to read from Redis", error);
-    return null;
-  }
-}
-
-async function setCachedSimplyPrintFileId(cacheKey: string, fileId: string) {
-  try {
-    const client = await getRedisClient();
-    if (!client) {
-      return;
-    }
-    if (!fileId || fileId.trim().length === 0) {
-      return;
-    }
-    await client.set(cacheKey, String(fileId), {
-      EX: SIMPLYPRINT_FILE_CACHE_TTL_SECONDS,
-    });
-  } catch (error) {
-    console.error("Failed to write to Redis", error);
-  }
-}
-
-async function recordMatchedLineItem(input: {
-  orderId: string;
-  orderName: string | null;
-  productId: string;
-  variantId: string | null;
-  sku: string | null;
-  quantity: number;
-  fileName: string;
-}) {
-  const existing = await prisma.matchedLineItem.findFirst({
-    where: {
-      orderId: input.orderId,
-      shopifyProductId: input.productId,
-      shopifyVariantId: input.variantId,
-      fileName: input.fileName,
-    },
-  });
-
-  if (existing) {
-    return prisma.matchedLineItem.update({
-      where: { id: existing.id },
-      data: {
-        quantity: { increment: input.quantity },
-        queuedAt: new Date(),
-      },
-    });
-  }
-
-  return prisma.matchedLineItem.create({
-    data: {
-      orderId: input.orderId,
-      orderName: input.orderName,
-      shopifyProductId: input.productId,
-      shopifyVariantId: input.variantId,
-      sku: input.sku,
-      quantity: input.quantity,
-      fileName: input.fileName,
-      queuedAt: new Date(),
-    },
-  });
-}
-
 async function addToSimplyPrintQueue(fileName: string, amount: number) {
   ensureSimplyPrintEnv();
 
   const fileId = await resolveSimplyPrintFileId(fileName);
-  if (!fileId || fileId.trim().length === 0) {
-    throw new Error(`Invalid SimplyPrint file id for ${fileName}`);
-  }
-  const dryRun = await getQueueDryRun();
-  if (dryRun) {
-    console.log(
-      "Dry-run enabled, skipping queue add",
-      JSON.stringify({ fileName, amount, fileId })
-    );
-    return;
-  }
-
   const groupId = await getQueueGroupId();
 
-  await withSimplyPrintRateLimit(() =>
-    axios.post(
-      `${simplyPrintBaseUrl()}/queue/AddItem`,
-      {
-        filesystem: fileId,
-        amount,
-        group: groupId,
+  await axios.post(
+    `${simplyPrintBaseUrl()}/queue/AddItem`,
+    {
+      filesystem: fileId,
+      amount,
+      group: groupId,
+    },
+    {
+      headers: {
+        "X-API-KEY": SIMPLYPRINT_API_KEY,
       },
-      {
-        headers: {
-          "X-API-KEY": SIMPLYPRINT_API_KEY,
-        },
-      }
-    )
+    }
   );
 }
 
-async function resolveSimplyPrintFileId(fileName: string): Promise<string> {
-  const cacheKey = `simplyprint:file-id:${normalizeText(fileName)}`;
-  const cached = await getCachedSimplyPrintFileId(cacheKey);
-  if (cached !== null) {
-    return cached;
-  }
-
-  const extractFileId = (file: any): string | null => {
-    const raw =
-      file?.id ??
-      file?.file_id ??
-      file?.fileId ??
-      file?.fileID ??
-      file?.fileid ??
-      file?.filesystem ??
-      file?.filesystem_id ??
-      file?.filesystemId ??
-      file?.fs_id ??
-      file?.fsId ??
-      file?.file?.id ??
-      file?.file?.file_id ??
-      file?.file?.fileId ??
-      file?.file?.filesystem_id ??
-      file?.file?.filesystemId ??
-      null;
-
-    if (raw === null || raw === undefined) {
-      return null;
-    }
-    const value = String(raw).trim();
-    return value.length > 0 ? value : null;
-  };
-
-  const fetchFiles = async (search: string, globalSearch = true) => {
-    const response = (await withSimplyPrintRateLimit(() =>
-      axios.get(`${simplyPrintBaseUrl()}/files/GetFiles`, {
-        headers: {
-          "X-API-KEY": SIMPLYPRINT_API_KEY,
-        },
-        params: {
-          search,
-          global_search: globalSearch,
-        },
-      })
-    )) as any;
-
-    return response.data?.files ?? [];
-  };
-
-  const files = await fetchFiles(fileName);
-  const target = fileName.trim().toLowerCase();
+async function resolveSimplyPrintFileId(fileName: string) {
+  const searchAttempts = buildSearchQueries(fileName);
   const targetNormalized = normalizeText(fileName);
-  const targetNoExt = normalizeText(fileName.replace(/\.[^/.]+$/, ""));
-  const targetCompact = targetNormalized.replace(/\s+/g, "");
 
-  const match = files.find((file: any) => {
-    const fullName = file.ext ? `${file.name}.${file.ext}` : file.name;
-    return fullName.toLowerCase() === target || file.name.toLowerCase() === target;
-  }) ??
-  files.find((file: any) => {
-    const fullName = file.ext ? `${file.name}.${file.ext}` : file.name;
-    const normalizedFull = normalizeText(fullName);
-    const normalizedName = normalizeText(file.name);
-    const compactFull = normalizedFull.replace(/\s+/g, "");
-    const compactName = normalizedName.replace(/\s+/g, "");
-    return (
-      normalizedFull === targetNormalized ||
-      normalizedName === targetNormalized ||
-      (targetNoExt &&
-        (normalizedFull === targetNoExt || normalizedName === targetNoExt)) ||
-      (targetCompact && (compactFull === targetCompact || compactName === targetCompact))
-    );
-  });
-
-  if (!match) {
-    const tokens = Array.from(
-      new Set(
-        normalizeText(fileName)
-          .split(" ")
-          .filter((token) => token.length > 2)
-          .slice(0, 3)
-      )
-    );
-
-    if (tokens.length > 0) {
-      const extraResponses = await Promise.all(tokens.map((token) => fetchFiles(token)));
-      const extraFiles = extraResponses.flat();
-      const allFiles = [...files, ...extraFiles];
-
-      const fallback = allFiles.find((file: any) => {
-        const fullName = file.ext ? `${file.name}.${file.ext}` : file.name;
-        const normalizedFull = normalizeText(fullName);
-        const normalizedName = normalizeText(file.name);
-        const compactFull = normalizedFull.replace(/\s+/g, "");
-        const compactName = normalizedName.replace(/\s+/g, "");
-        return (
-          normalizedFull === targetNormalized ||
-          normalizedName === targetNormalized ||
-          (targetNoExt &&
-            (normalizedFull === targetNoExt || normalizedName === targetNoExt)) ||
-          (targetCompact && (compactFull === targetCompact || compactName === targetCompact))
-        );
-      });
-
-      if (fallback) {
-        const fallbackId = extractFileId(fallback);
-        if (fallbackId === null) {
-          console.warn("SimplyPrint file match missing id", {
-            fileName,
-            fallback,
-          });
-        } else {
-          await setCachedSimplyPrintFileId(cacheKey, fallbackId);
-          return fallbackId;
-        }
-      }
-    }
-  } else {
-    const matchId = extractFileId(match);
-    if (matchId === null) {
-      console.warn("SimplyPrint file match missing id", { fileName, match });
-    } else {
-      await setCachedSimplyPrintFileId(cacheKey, matchId);
-      return matchId;
-    }
-  }
-
-  const exactSearches = Array.from(
-    new Set(
-      [fileName, fileName.replace(/\.[^/.]+$/, "").trim()].filter(
-        (value) => value.length > 0
-      )
-    )
-  );
-
-  for (const search of exactSearches) {
-    const exactFiles = await fetchFiles(search, false);
-    const exactMatch = exactFiles.find((file: any) => {
-      const fullName = file.ext ? `${file.name}.${file.ext}` : file.name;
-      return fullName.toLowerCase() === target || file.name.toLowerCase() === target;
+  for (const search of searchAttempts) {
+    const response = await axios.get(`${simplyPrintBaseUrl()}/files/GetFiles`, {
+      headers: {
+        "X-API-KEY": SIMPLYPRINT_API_KEY,
+      },
+      params: {
+        search,
+        global_search: true,
+      },
     });
 
-    if (exactMatch) {
-      const exactId = extractFileId(exactMatch);
-      if (exactId !== null) {
-        await setCachedSimplyPrintFileId(cacheKey, exactId);
-        return exactId;
-      }
-      console.warn("SimplyPrint exact file match missing id", {
-        fileName,
-        exactMatch,
-      });
+    const files = response.data?.files ?? [];
+    const match = files.find((file: any) => {
+      const fullName = file.ext ? `${file.name}.${file.ext}` : file.name;
+      const normalizedFull = normalizeText(fullName);
+      const normalizedName = normalizeText(file.name);
+      return (
+        normalizedFull === targetNormalized ||
+        normalizedName === targetNormalized
+      );
+    });
+
+    if (match) {
+      return match.id;
     }
   }
 
-  throw new Error(`SimplyPrint file id missing for ${fileName}`);
+  throw new Error(`SimplyPrint file not found: ${fileName}`);
+}
+
+function buildSearchQueries(fileName: string): string[] {
+  const trimmed = fileName.trim();
+  const base = trimmed.includes(".") ? trimmed.slice(0, trimmed.lastIndexOf(".")) : trimmed;
+  const tokens = normalizeText(base)
+    .split(" ")
+    .filter((token) => token.length > 2);
+
+  const queries = [trimmed, base, ...tokens].filter((value) => value.length > 0);
+  return Array.from(new Set(queries));
 }
 
 function normalizeText(value: string) {

@@ -13,6 +13,7 @@ model Mapping {
   shopifyVariantId     String?
   simplyprintFileName  String?
   simplyprintFileNames String?
+  skipQueue            Boolean  @default(false)
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
 
@@ -46,37 +47,4 @@ model HiddenProduct {
   id               Int      @id @default(autoincrement())
   shopifyProductId String   @unique
   createdAt        DateTime @default(now())
-}
-
-model HiddenVariant {
-  id               Int      @id @default(autoincrement())
-  shopifyProductId String
-  shopifyVariantId String
-  createdAt        DateTime @default(now())
-
-  @@unique([shopifyProductId, shopifyVariantId])
-  @@index([shopifyProductId])
-  @@index([shopifyVariantId])
-}
-
-model QueueExcludedProduct {
-  id               Int      @id @default(autoincrement())
-  shopifyProductId String   @unique
-  createdAt        DateTime @default(now())
-}
-
-model MatchedLineItem {
-  id               Int      @id @default(autoincrement())
-  orderId          String
-  orderName        String?
-  shopifyProductId String
-  shopifyVariantId String?
-  sku              String?
-  quantity         Int      @default(1)
-  fileName         String
-  queuedAt         DateTime @default(now())
-
-  @@index([orderId])
-  @@index([shopifyProductId])
-  @@index([shopifyVariantId])
 }
