@@ -69,3 +69,13 @@ If BASIC_AUTH_USER/BASIC_AUTH_PASS are set, the webhook still works because it i
 
 ## SimplyPrint queue group
 The queue group name defaults to "Shopify". Create this queue group in SimplyPrint or change SIMPLYPRINT_QUEUE_GROUP_NAME in the variable or in the software when its started.
+
+
+## SCREENSHOTS
+# Filemapping
+![Alt text](/Filemapping.png?raw=true "Filemapping")
+
+
+# Matched orders
+
+![Alt text](/MatchedOrders.png?raw=true "Matched Orders")
