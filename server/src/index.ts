@@ -409,7 +409,7 @@ app.post("/api/mappings", async (req: Request, res: Response) => {
             where: { id: existing.id },
             data: { skipQueue },
           });
-          return res.json({ mapping });
+          return res.json({ mapping: enrichMapping(mapping) });
         }
 
         if (skipQueue) {
@@ -420,7 +420,7 @@ app.post("/api/mappings", async (req: Request, res: Response) => {
               skipQueue: true,
             },
           });
-          return res.json({ mapping });
+          return res.json({ mapping: enrichMapping(mapping) });
         }
       }
 
@@ -447,7 +447,7 @@ app.post("/api/mappings", async (req: Request, res: Response) => {
           },
         });
 
-    res.json({ mapping });
+    res.json({ mapping: enrichMapping(mapping) });
   } catch (error) {
     console.error("Failed to save mapping", error);
     res.status(400).json({ error: "Invalid mapping payload" });
@@ -921,6 +921,12 @@ function normalizeMappingFiles(mapping: any): string[] {
     seen.add(key);
     return true;
   });
+}
+
+function enrichMapping(mapping: any) {
+  const files = normalizeMappingFiles(mapping);
+  const localFileNames = files.filter((name) => !!resolveLocalFilePath(name));
+  return { ...mapping, localFileNames };
 }
 
 let cachedQueueGroupId: number | null = null;
