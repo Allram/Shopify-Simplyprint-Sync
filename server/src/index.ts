@@ -34,6 +34,9 @@ const SIMPLYPRINT_QUEUE_GROUP_NAME =
   process.env.SIMPLYPRINT_QUEUE_GROUP_NAME ?? "Shopify";
 
 const LOCAL_FILES_DIR = process.env.LOCAL_FILES_DIR ?? "/RemoteFiles";
+const LOCAL_FILES_CACHE_TTL_SECONDS = Number(
+  process.env.LOCAL_FILES_CACHE_TTL_SECONDS ?? 60
+);
 
 const BASIC_AUTH_USER = process.env.BASIC_AUTH_USER;
 const BASIC_AUTH_PASS = process.env.BASIC_AUTH_PASS;
@@ -1021,11 +1024,107 @@ function resolveLocalFilePath(fileName: string): string | null {
     if (!stat.isFile()) {
       return null;
     }
+    return candidate;
   } catch {
+    if (path.isAbsolute(trimmed)) {
+      return null;
+    }
+  }
+
+  const cache = getLocalFilesCache();
+  if (!cache) {
     return null;
   }
 
-  return candidate;
+  const normalizedRelative = normalizeLocalRelativePath(trimmed);
+  const exact = cache.byRelative.get(normalizedRelative);
+  if (exact) {
+    return exact;
+  }
+
+  const baseName = path.basename(trimmed).toLowerCase();
+  const matches = cache.byBaseName.get(baseName) ?? [];
+  if (matches.length === 1) {
+    return matches[0];
+  }
+
+  return null;
+}
+
+function normalizeLocalRelativePath(value: string) {
+  const trimmed = value.replace(/^\.\//, "").replace(/^\.\\/, "");
+  return trimmed.replace(/\\/g, "/");
+}
+
+let cachedLocalFilesAt = 0;
+let cachedLocalFiles:
+  | {
+      byRelative: Map<string, string>;
+      byBaseName: Map<string, string[]>;
+    }
+  | null = null;
+
+function getLocalFilesCache() {
+  const ttlMs = Math.max(5, LOCAL_FILES_CACHE_TTL_SECONDS) * 1000;
+  if (cachedLocalFiles && Date.now() - cachedLocalFilesAt < ttlMs) {
+    return cachedLocalFiles;
+  }
+
+  const baseDir = path.resolve(LOCAL_FILES_DIR);
+  try {
+    const stat = fs.statSync(baseDir);
+    if (!stat.isDirectory()) {
+      cachedLocalFiles = null;
+      cachedLocalFilesAt = Date.now();
+      return null;
+    }
+  } catch {
+    cachedLocalFiles = null;
+    cachedLocalFilesAt = Date.now();
+    return null;
+  }
+
+  const byRelative = new Map<string, string>();
+  const byBaseName = new Map<string, string[]>();
+
+  const stack = [baseDir];
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (!current) {
+      continue;
+    }
+
+    let entries: fs.Dirent[] = [];
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      const fullPath = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(fullPath);
+        continue;
+      }
+
+      if (!entry.isFile()) {
+        continue;
+      }
+
+      const relative = path.relative(baseDir, fullPath).replace(/\\/g, "/");
+      byRelative.set(relative, fullPath);
+
+      const baseName = entry.name.toLowerCase();
+      const list = byBaseName.get(baseName) ?? [];
+      list.push(fullPath);
+      byBaseName.set(baseName, list);
+    }
+  }
+
+  cachedLocalFiles = { byRelative, byBaseName };
+  cachedLocalFilesAt = Date.now();
+  return cachedLocalFiles;
 }
 
 async function uploadLocalFile(localPath: string): Promise<string> {
