@@ -73,11 +73,10 @@ export default function App() {
   const [queueGroupId, setQueueGroupId] = useState<number | null>(null);
   const [queueSaving, setQueueSaving] = useState(false);
   const [unmatched, setUnmatched] = useState<UnmatchedLineItem[]>([]);
-  const [activeTab, setActiveTab] = useState<"mappings" | "unmatched">(
+  const [activeTab, setActiveTab] = useState<
+    "mappings" | "unmatched" | "matched"
+  >(
     "mappings"
-  );
-  const [unmatchedTab, setUnmatchedTab] = useState<"pending" | "matched">(
-    "pending"
   );
   const [mappingFilter, setMappingFilter] = useState<
     "all" | "mapped" | "unmapped"
@@ -308,6 +307,12 @@ export default function App() {
         >
           Unmatched Orders
         </button>
+        <button
+          className={`tab ${activeTab === "matched" ? "tab--active" : ""}`}
+          onClick={() => setActiveTab("matched")}
+        >
+          Matched Orders
+        </button>
       </div>
 
       {error && (
@@ -470,60 +475,46 @@ export default function App() {
           })}
           </div>
         </>
+      ) : activeTab === "unmatched" ? (
+        <div className="panel">
+          {(() => {
+            const pending = unmatched.filter((item) => !item.queuedAt);
+            return pending.length === 0 ? (
+              <div className="muted">No unmatched orders.</div>
+            ) : (
+              <div className="unmatched-list">
+                {pending.map((item) => (
+                  <UnmatchedRow
+                    key={item.id}
+                    item={item}
+                    onQueue={queueUnmatched}
+                    onDelete={deleteUnmatched}
+                  />
+                ))}
+              </div>
+            );
+          })()}
+        </div>
       ) : (
         <div className="panel">
-          <div className="tab-bar">
-            <button
-              className={`tab ${unmatchedTab === "pending" ? "tab--active" : ""}`}
-              onClick={() => setUnmatchedTab("pending")}
-            >
-              Pending
-            </button>
-            <button
-              className={`tab ${unmatchedTab === "matched" ? "tab--active" : ""}`}
-              onClick={() => setUnmatchedTab("matched")}
-            >
-              Matched
-            </button>
-          </div>
-          {unmatchedTab === "pending" ? (
-            (() => {
-              const pending = unmatched.filter((item) => !item.queuedAt);
-              return pending.length === 0 ? (
-                <div className="muted">No unmatched orders.</div>
-              ) : (
-                <div className="unmatched-list">
-                  {pending.map((item) => (
-                    <UnmatchedRow
-                      key={item.id}
-                      item={item}
-                      onQueue={queueUnmatched}
-                      onDelete={deleteUnmatched}
-                    />
-                  ))}
-                </div>
-              );
-            })()
-          ) : (
-            (() => {
-              const matched = unmatched.filter((item) => !!item.queuedAt);
-              return matched.length === 0 ? (
-                <div className="muted">No matched orders yet.</div>
-              ) : (
-                <div className="unmatched-list">
-                  {matched.map((item) => (
-                    <UnmatchedRow
-                      key={item.id}
-                      item={item}
-                      onQueue={queueUnmatched}
-                      onDelete={deleteUnmatched}
-                      readOnly
-                    />
-                  ))}
-                </div>
-              );
-            })()
-          )}
+          {(() => {
+            const matched = unmatched.filter((item) => !!item.queuedAt);
+            return matched.length === 0 ? (
+              <div className="muted">No matched orders yet.</div>
+            ) : (
+              <div className="unmatched-list">
+                {matched.map((item) => (
+                  <UnmatchedRow
+                    key={item.id}
+                    item={item}
+                    onQueue={queueUnmatched}
+                    onDelete={deleteUnmatched}
+                    readOnly
+                  />
+                ))}
+              </div>
+            );
+          })()}
         </div>
       )}
     </div>
