@@ -298,6 +298,21 @@ body {
   margin-bottom: 16px;
 }
 
+.banner--actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.banner__actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
 .banner--error {
   background: #fee2e2;
   color: #b91c1c;
@@ -306,4 +321,13 @@ body {
 .muted {
   color: var(--muted);
   font-size: 13px;
+}
+
+.input {
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--input-border);
+  background: transparent;
+  color: var(--text);
+  min-width: 240px;
 }

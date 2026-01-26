@@ -77,9 +77,7 @@ export default function App() {
   const [mappingFilter, setMappingFilter] = useState<
     "all" | "mapped" | "unmapped"
   >("all");
-  const [skipQueueSort, setSkipQueueSort] = useState<
-    "none" | "skip-first" | "skip-last"
-  >("none");
+  const [showSkipQueueOnly, setShowSkipQueueOnly] = useState(false);
   const [hiddenProductIds, setHiddenProductIds] = useState<Set<string>>(
     () => new Set()
   );
@@ -88,6 +86,9 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [darkMode, setDarkMode] = useState(
     () => window.localStorage.getItem("theme") === "dark"
+  );
+  const [shopDomain, setShopDomain] = useState(
+    () => window.localStorage.getItem("shopDomain") ?? ""
   );
 
   const loadData = useCallback(async () => {
@@ -143,6 +144,18 @@ export default function App() {
     document.body.classList.toggle("theme-dark", darkMode);
     window.localStorage.setItem("theme", darkMode ? "dark" : "light");
   }, [darkMode]);
+
+  useEffect(() => {
+    window.localStorage.setItem("shopDomain", shopDomain);
+  }, [shopDomain]);
+
+  const startShopifyAuth = () => {
+    const cleaned = shopDomain.trim();
+    const url = cleaned
+      ? `/api/shopify/auth?shop=${encodeURIComponent(cleaned)}`
+      : "/api/shopify/auth";
+    window.location.href = url;
+  };
 
   const mappingFor = useCallback(
     (productId: string, variantId: string | null) =>
@@ -289,7 +302,26 @@ export default function App() {
         </button>
       </div>
 
-      {error && <div className="banner banner--error">{error}</div>}
+      {error && (
+        <div className="banner banner--error banner--actions">
+          <div>
+            <strong>Failed to load data.</strong>
+            <div className="muted">{error}</div>
+          </div>
+          <div className="banner__actions">
+            <input
+              className="input"
+              type="text"
+              value={shopDomain}
+              onChange={(event) => setShopDomain(event.target.value)}
+              placeholder="your-store.myshopify.com (optional)"
+            />
+            <button className="btn" onClick={startShopifyAuth}>
+              Authenticate with Shopify
+            </button>
+          </div>
+        </div>
+      )}
       {loading ? (
         <div className="panel">Loading products…</div>
       ) : activeTab === "mappings" ? (
@@ -338,22 +370,14 @@ export default function App() {
                 <option value="unmapped">Unmatched only</option>
                 <option value="mapped">Matched only</option>
               </select>
-              <label className="muted" htmlFor="skipQueueSort">
-                Sort by skip queue:
+              <label className="checkbox">
+                <input
+                  type="checkbox"
+                  checked={showSkipQueueOnly}
+                  onChange={(event) => setShowSkipQueueOnly(event.target.checked)}
+                />
+                Skip queue only
               </label>
-              <select
-                id="skipQueueSort"
-                value={skipQueueSort}
-                onChange={(event) =>
-                  setSkipQueueSort(
-                    event.target.value as "none" | "skip-first" | "skip-last"
-                  )
-                }
-              >
-                <option value="none">Default</option>
-                <option value="skip-first">Skip queue first</option>
-                <option value="skip-last">Skip queue last</option>
-              </select>
               <label className="checkbox">
                 <input
                   type="checkbox"
@@ -373,34 +397,20 @@ export default function App() {
                   return null;
                 }
 
-                const visibleVariants = product.variants
-                  .filter((variant) => {
-                    const hasMapping = !!mappingFor(product.id, variant.id);
-                    if (mappingFilter === "mapped") {
-                      return hasMapping;
-                    }
-                    if (mappingFilter === "unmapped") {
-                      return !hasMapping;
-                    }
-                    return true;
-                  })
-                  .sort((a, b) => {
-                    if (skipQueueSort === "none") {
-                      return 0;
-                    }
-                    const aSkip = Boolean(
-                      mappingFor(product.id, a.id)?.skipQueue
-                    );
-                    const bSkip = Boolean(
-                      mappingFor(product.id, b.id)?.skipQueue
-                    );
-                    if (aSkip === bSkip) {
-                      return a.title.localeCompare(b.title);
-                    }
-                    return skipQueueSort === "skip-first"
-                      ? Number(bSkip) - Number(aSkip)
-                      : Number(aSkip) - Number(bSkip);
-                  });
+                const visibleVariants = product.variants.filter((variant) => {
+                  const mapping = mappingFor(product.id, variant.id);
+                  const hasMapping = !!mapping;
+                  if (mappingFilter === "mapped") {
+                    return hasMapping;
+                  }
+                  if (mappingFilter === "unmapped") {
+                    return !hasMapping;
+                  }
+                  if (showSkipQueueOnly) {
+                    return Boolean(mapping?.skipQueue);
+                  }
+                  return true;
+                });
 
                 if (visibleVariants.length === 0) {
                   return null;
