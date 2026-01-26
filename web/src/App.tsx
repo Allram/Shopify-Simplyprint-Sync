@@ -77,7 +77,7 @@ export default function App() {
   const [mappingFilter, setMappingFilter] = useState<
     "all" | "mapped" | "unmapped"
   >("all");
-  const [showSkipQueueOnly, setShowSkipQueueOnly] = useState(false);
+  const [hideSkipQueue, setHideSkipQueue] = useState(false);
   const [hiddenProductIds, setHiddenProductIds] = useState<Set<string>>(
     () => new Set()
   );
@@ -373,10 +373,10 @@ export default function App() {
               <label className="checkbox">
                 <input
                   type="checkbox"
-                  checked={showSkipQueueOnly}
-                  onChange={(event) => setShowSkipQueueOnly(event.target.checked)}
+                  checked={hideSkipQueue}
+                  onChange={(event) => setHideSkipQueue(event.target.checked)}
                 />
-                Skip queue only
+                Hide skip queue
               </label>
               <label className="checkbox">
                 <input
@@ -406,8 +406,8 @@ export default function App() {
                   if (mappingFilter === "unmapped") {
                     return !hasMapping;
                   }
-                  if (showSkipQueueOnly) {
-                    return Boolean(mapping?.skipQueue);
+                  if (hideSkipQueue && mapping?.skipQueue) {
+                    return false;
                   }
                   return true;
                 });
@@ -627,6 +627,28 @@ function MappingRow({
     setFileNames((prev: string[]) => [...prev, ""]);
   };
 
+  const handleSkipQueueChange = async (nextValue: boolean) => {
+    setSkipQueue(nextValue);
+
+    if (!current) {
+      return;
+    }
+
+    const cleaned = fileNames
+      .map((name: string) => name.trim())
+      .filter((name: string) => name);
+    if (cleaned.length === 0) {
+      return;
+    }
+
+    setSaving(true);
+    try {
+      await onSave(productId, variantId, cleaned, nextValue);
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const removeFileInput = (index: number) => {
     setFileNames((prev: string[]) =>
       prev.filter((_value: string, idx: number) => idx !== index)
@@ -674,7 +696,7 @@ function MappingRow({
           <input
             type="checkbox"
             checked={skipQueue}
-            onChange={(event) => setSkipQueue(event.target.checked)}
+            onChange={(event) => handleSkipQueueChange(event.target.checked)}
           />
           Skip queue
         </label>
