@@ -98,6 +98,9 @@ export default function App() {
     setError(null);
 
     try {
+      await fetchJson("/api/local-files/refresh", { method: "POST" }).catch(
+        () => undefined
+      );
       const [
         productData,
         mappingData,

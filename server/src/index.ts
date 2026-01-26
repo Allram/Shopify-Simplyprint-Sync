@@ -35,7 +35,7 @@ const SIMPLYPRINT_QUEUE_GROUP_NAME =
 
 const LOCAL_FILES_DIR = process.env.LOCAL_FILES_DIR ?? "/RemoteFiles";
 const LOCAL_FILES_CACHE_TTL_SECONDS = Number(
-  process.env.LOCAL_FILES_CACHE_TTL_SECONDS ?? 60
+  process.env.LOCAL_FILES_CACHE_TTL_SECONDS ?? 86400
 );
 
 const BASIC_AUTH_USER = process.env.BASIC_AUTH_USER;
@@ -516,6 +516,11 @@ app.get("/api/local-files", async (req: Request, res: Response) => {
   }
 
   return res.json({ files: results });
+});
+
+app.post("/api/local-files/refresh", (_req: Request, res: Response) => {
+  clearLocalFilesCache();
+  return res.json({ status: "ok" });
 });
 
 const testQueueSchema = z.object({
@@ -1084,6 +1089,11 @@ let cachedLocalFiles:
       byBaseName: Map<string, string[]>;
     }
   | null = null;
+
+function clearLocalFilesCache() {
+  cachedLocalFiles = null;
+  cachedLocalFilesAt = 0;
+}
 
 function getLocalFilesCache() {
   const ttlMs = Math.max(5, LOCAL_FILES_CACHE_TTL_SECONDS) * 1000;
