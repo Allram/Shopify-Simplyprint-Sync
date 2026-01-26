@@ -3,6 +3,7 @@
 > ## ✨ SimplyPrint referral
 > Want to try SimplyPrint? Use this referral link to sign up and support the project:
 > https://simplyprint.io/ref/WGEW4CPQ
+> [![SimplyPrint referral badge](https://cdn.simplyprint.io/i/static/ref/powered-by-dark.svg)](https://simplyprint.io/ref/WGEW4CPQ)
 
 This service lets you map Shopify products and variants to SimplyPrint files. When a Shopify order is created, mapped items are added to the SimplyPrint "Shopify" queue group.
 
@@ -79,3 +80,8 @@ The queue group name defaults to "Shopify". Create this queue group in SimplyPri
 # Matched orders
 
 ![Alt text](/MatchedOrders.png?raw=true "Matched Orders")
+
+
+
+
+[![SimplyPrint referral badge](https://cdn.simplyprint.io/i/static/ref/powered-by-dark.svg)](https://simplyprint.io/ref/WGEW4CPQ)
