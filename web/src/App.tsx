@@ -76,6 +76,9 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<"mappings" | "unmatched">(
     "mappings"
   );
+  const [unmatchedTab, setUnmatchedTab] = useState<"pending" | "matched">(
+    "pending"
+  );
   const [mappingFilter, setMappingFilter] = useState<
     "all" | "mapped" | "unmapped"
   >("all");
@@ -469,19 +472,57 @@ export default function App() {
         </>
       ) : (
         <div className="panel">
-          {unmatched.length === 0 ? (
-            <div className="muted">No unmatched orders.</div>
+          <div className="tab-bar">
+            <button
+              className={`tab ${unmatchedTab === "pending" ? "tab--active" : ""}`}
+              onClick={() => setUnmatchedTab("pending")}
+            >
+              Pending
+            </button>
+            <button
+              className={`tab ${unmatchedTab === "matched" ? "tab--active" : ""}`}
+              onClick={() => setUnmatchedTab("matched")}
+            >
+              Matched
+            </button>
+          </div>
+          {unmatchedTab === "pending" ? (
+            (() => {
+              const pending = unmatched.filter((item) => !item.queuedAt);
+              return pending.length === 0 ? (
+                <div className="muted">No unmatched orders.</div>
+              ) : (
+                <div className="unmatched-list">
+                  {pending.map((item) => (
+                    <UnmatchedRow
+                      key={item.id}
+                      item={item}
+                      onQueue={queueUnmatched}
+                      onDelete={deleteUnmatched}
+                    />
+                  ))}
+                </div>
+              );
+            })()
           ) : (
-            <div className="unmatched-list">
-              {unmatched.map((item) => (
-                <UnmatchedRow
-                  key={item.id}
-                  item={item}
-                  onQueue={queueUnmatched}
-                  onDelete={deleteUnmatched}
-                />
-              ))}
-            </div>
+            (() => {
+              const matched = unmatched.filter((item) => !!item.queuedAt);
+              return matched.length === 0 ? (
+                <div className="muted">No matched orders yet.</div>
+              ) : (
+                <div className="unmatched-list">
+                  {matched.map((item) => (
+                    <UnmatchedRow
+                      key={item.id}
+                      item={item}
+                      onQueue={queueUnmatched}
+                      onDelete={deleteUnmatched}
+                      readOnly
+                    />
+                  ))}
+                </div>
+              );
+            })()
           )}
         </div>
       )}
@@ -851,16 +892,18 @@ type UnmatchedRowProps = {
   item: UnmatchedLineItem;
   onQueue: (itemId: number, fileName: string, saveMapping: boolean) => void;
   onDelete: (itemId: number) => void;
+  readOnly?: boolean;
 };
 
-function UnmatchedRow({ item, onQueue, onDelete }: UnmatchedRowProps) {
+function UnmatchedRow({ item, onQueue, onDelete, readOnly }: UnmatchedRowProps) {
   const [fileName, setFileName] = useState("");
   const [saveMapping, setSaveMapping] = useState(true);
   const [suggested, setSuggested] = useState<FileItem[]>([]);
   const [saving, setSaving] = useState(false);
+  const [activeSearch, setActiveSearch] = useState<string>("");
 
   useEffect(() => {
-    const query = item.sku ?? "";
+    const query = activeSearch.trim() || (item.sku ?? "").trim();
     if (!query) {
       setSuggested([]);
       return;
@@ -868,17 +911,40 @@ function UnmatchedRow({ item, onQueue, onDelete }: UnmatchedRowProps) {
 
     const handle = window.setTimeout(async () => {
       try {
-        const result = await fetchJson<{ files: FileItem[] }>(
-          `/api/simplyprint/suggest?query=${encodeURIComponent(query)}`
+        const [remoteResult, localResult] = await Promise.all([
+          fetchJson<{ files: FileItem[] }>(
+            `/api/simplyprint/files?search=${encodeURIComponent(query)}`
+          ),
+          fetchJson<{ files: { name: string; fullName: string }[] }>(
+            `/api/local-files?search=${encodeURIComponent(query)}`
+          ),
+        ]);
+
+        const localFiles: FileItem[] = localResult.files.map((file) => ({
+          id: `local-${file.fullName}`,
+          name: file.name,
+          fullName: file.fullName,
+          source: "local",
+        }));
+
+        const combined = [...localFiles, ...remoteResult.files].reduce(
+          (acc: FileItem[], entry: FileItem) => {
+            if (!acc.find((existing) => existing.fullName === entry.fullName)) {
+              acc.push(entry);
+            }
+            return acc;
+          },
+          []
         );
-        setSuggested(result.files.slice(0, 5));
+
+        setSuggested(combined.slice(0, 5));
       } catch (error) {
         console.error(error);
       }
     }, 300);
 
     return () => window.clearTimeout(handle);
-  }, [item.sku]);
+  }, [activeSearch, item.sku]);
 
   const handleQueue = async () => {
     if (!fileName.trim()) {
@@ -906,37 +972,43 @@ function UnmatchedRow({ item, onQueue, onDelete }: UnmatchedRowProps) {
         {item.reason && <div className="muted">Reason: {item.reason}</div>}
         {item.queuedAt && <div className="muted">Queued at: {item.queuedAt}</div>}
       </div>
-      <div className="unmatched-row__actions">
-        <input
-          list={`unmatched-files-${item.id}`}
-          value={fileName}
-          onChange={(event) => setFileName(event.target.value)}
-          placeholder="SimplyPrint filename"
-        />
-        <datalist id={`unmatched-files-${item.id}`}>
-          {suggested.map((file) => (
-            <option key={file.id} value={file.fullName} />
-          ))}
-        </datalist>
-        <label className="checkbox">
+      {!readOnly && (
+        <div className="unmatched-row__actions">
           <input
-            type="checkbox"
-            checked={saveMapping}
-            onChange={(event) => setSaveMapping(event.target.checked)}
+            list={`unmatched-files-${item.id}`}
+            value={fileName}
+            onFocus={() => setActiveSearch(fileName)}
+            onChange={(event) => {
+              setFileName(event.target.value);
+              setActiveSearch(event.target.value);
+            }}
+            placeholder="SimplyPrint filename or local path"
           />
-          Save mapping
-        </label>
-        <button className="btn" onClick={handleQueue} disabled={saving}>
-          Queue
-        </button>
-        <button
-          className="btn btn--ghost"
-          onClick={() => onDelete(item.id)}
-          disabled={saving}
-        >
-          Dismiss
-        </button>
-      </div>
+          <datalist id={`unmatched-files-${item.id}`}>
+            {suggested.map((file) => (
+              <option key={file.id} value={file.fullName} />
+            ))}
+          </datalist>
+          <label className="checkbox">
+            <input
+              type="checkbox"
+              checked={saveMapping}
+              onChange={(event) => setSaveMapping(event.target.checked)}
+            />
+            Save mapping
+          </label>
+          <button className="btn" onClick={handleQueue} disabled={saving}>
+            Queue
+          </button>
+          <button
+            className="btn btn--ghost"
+            onClick={() => onDelete(item.id)}
+            disabled={saving}
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
     </div>
   );
 }
