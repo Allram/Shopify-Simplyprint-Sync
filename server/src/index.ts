@@ -155,6 +155,7 @@ app.post(
         }
 
         const filesToQueue = normalizeMappingFiles(mapping);
+        let queueFailed = false;
 
         for (const fileName of filesToQueue) {
           console.log(
@@ -170,6 +171,7 @@ app.post(
             await addToSimplyPrintQueue(fileName, quantity);
           } catch (error) {
             console.error("Failed to queue file", error);
+            queueFailed = true;
             if (orderId) {
               await recordUnmatchedLineItem({
                 orderId,
@@ -182,6 +184,18 @@ app.post(
               });
             }
           }
+        }
+
+        if (!queueFailed && orderId) {
+          await recordMatchedLineItem({
+            orderId,
+            orderName,
+            productId,
+            variantId,
+            sku: item?.sku ? String(item.sku) : null,
+            quantity,
+            reason: "Auto matched",
+          });
         }
       }
 
@@ -920,6 +934,51 @@ async function recordUnmatchedLineItem(input: {
       sku: input.sku,
       quantity: input.quantity,
       reason: input.reason,
+    },
+  });
+}
+
+async function recordMatchedLineItem(input: {
+  orderId: string;
+  orderName: string | null;
+  productId: string;
+  variantId: string | null;
+  sku: string | null;
+  quantity: number;
+  reason: string;
+}) {
+  const existing = await prisma.unmatchedLineItem.findFirst({
+    where: {
+      orderId: input.orderId,
+      shopifyProductId: input.productId,
+      shopifyVariantId: input.variantId,
+    },
+    orderBy: { createdAt: "desc" },
+  });
+
+  if (existing) {
+    if (existing.queuedAt) {
+      return existing;
+    }
+    return prisma.unmatchedLineItem.update({
+      where: { id: existing.id },
+      data: {
+        queuedAt: new Date(),
+        reason: input.reason,
+      },
+    });
+  }
+
+  return prisma.unmatchedLineItem.create({
+    data: {
+      orderId: input.orderId,
+      orderName: input.orderName,
+      shopifyProductId: input.productId,
+      shopifyVariantId: input.variantId,
+      sku: input.sku,
+      quantity: input.quantity,
+      reason: input.reason,
+      queuedAt: new Date(),
     },
   });
 }
