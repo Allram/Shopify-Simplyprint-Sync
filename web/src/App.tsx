@@ -48,6 +48,7 @@ type UnmatchedLineItem = {
   sku: string | null;
   quantity: number;
   reason: string | null;
+  skippedQueue?: boolean | null;
   queuedAt: string | null;
   createdAt: string;
 };
@@ -74,10 +75,8 @@ export default function App() {
   const [queueSaving, setQueueSaving] = useState(false);
   const [unmatched, setUnmatched] = useState<UnmatchedLineItem[]>([]);
   const [activeTab, setActiveTab] = useState<
-    "mappings" | "unmatched" | "matched"
-  >(
-    "mappings"
-  );
+    "mappings" | "unmatched" | "skipped" | "matched"
+  >("mappings");
   const [mappingFilter, setMappingFilter] = useState<
     "all" | "mapped" | "unmapped"
   >("all");
@@ -309,6 +308,12 @@ export default function App() {
           Unmatched Orders
         </button>
         <button
+          className={`tab ${activeTab === "skipped" ? "tab--active" : ""}`}
+          onClick={() => setActiveTab("skipped")}
+        >
+          Skipped Queue Orders
+        </button>
+        <button
           className={`tab ${activeTab === "matched" ? "tab--active" : ""}`}
           onClick={() => setActiveTab("matched")}
         >
@@ -497,12 +502,36 @@ export default function App() {
       ) : activeTab === "unmatched" ? (
         <div className="panel">
           {(() => {
-            const pending = unmatched.filter((item) => !item.queuedAt);
+            const pending = unmatched.filter(
+              (item) => !item.queuedAt && !item.skippedQueue
+            );
             return pending.length === 0 ? (
               <div className="muted">No unmatched orders.</div>
             ) : (
               <div className="unmatched-list">
                 {pending.map((item) => (
+                  <UnmatchedRow
+                    key={item.id}
+                    item={item}
+                    onQueue={queueUnmatched}
+                    onDelete={deleteUnmatched}
+                  />
+                ))}
+              </div>
+            );
+          })()}
+        </div>
+      ) : activeTab === "skipped" ? (
+        <div className="panel">
+          {(() => {
+            const skipped = unmatched.filter(
+              (item) => !item.queuedAt && item.skippedQueue
+            );
+            return skipped.length === 0 ? (
+              <div className="muted">No skipped queue orders.</div>
+            ) : (
+              <div className="unmatched-list">
+                {skipped.map((item) => (
                   <UnmatchedRow
                     key={item.id}
                     item={item}

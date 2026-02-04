@@ -151,6 +151,18 @@ app.post(
             "Skipping queue for product",
             JSON.stringify({ productId, variantId, sku: item?.sku ?? null })
           );
+          if (orderId) {
+            await recordUnmatchedLineItem({
+              orderId,
+              orderName,
+              productId,
+              variantId,
+              sku: item?.sku ? String(item.sku) : null,
+              quantity,
+              reason: "Skipped queue",
+              skippedQueue: true,
+            });
+          }
           continue;
         }
 
@@ -745,7 +757,11 @@ app.post("/api/unmatched/:id/queue", async (req: Request, res: Response) => {
     await addToSimplyPrintQueue(payload.fileName, item.quantity);
     await prisma.unmatchedLineItem.update({
       where: { id },
-      data: { queuedAt: new Date(), reason: "Queued manually" },
+      data: {
+        queuedAt: new Date(),
+        reason: "Queued manually",
+        skippedQueue: false,
+      },
     });
 
     res.json({ status: "queued" });
@@ -924,6 +940,7 @@ async function recordUnmatchedLineItem(input: {
   sku: string | null;
   quantity: number;
   reason: string;
+  skippedQueue?: boolean;
 }) {
   await prisma.unmatchedLineItem.create({
     data: {
@@ -934,6 +951,7 @@ async function recordUnmatchedLineItem(input: {
       sku: input.sku,
       quantity: input.quantity,
       reason: input.reason,
+      skippedQueue: input.skippedQueue ?? false,
     },
   });
 }
@@ -965,6 +983,7 @@ async function recordMatchedLineItem(input: {
       data: {
         queuedAt: new Date(),
         reason: input.reason,
+        skippedQueue: false,
       },
     });
   }
@@ -979,6 +998,7 @@ async function recordMatchedLineItem(input: {
       quantity: input.quantity,
       reason: input.reason,
       queuedAt: new Date(),
+      skippedQueue: false,
     },
   });
 }

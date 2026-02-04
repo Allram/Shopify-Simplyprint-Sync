@@ -35,6 +35,7 @@ model UnmatchedLineItem {
   sku              String?
   quantity         Int      @default(1)
   reason           String?
+  skippedQueue     Boolean  @default(false)
   queuedAt         DateTime?
   createdAt        DateTime @default(now())
 
