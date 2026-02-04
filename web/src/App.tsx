@@ -94,6 +94,11 @@ export default function App() {
   const [shopDomain, setShopDomain] = useState(
     () => window.localStorage.getItem("shopDomain") ?? ""
   );
+  const [pageSize, setPageSize] = useState(20);
+  const [productPage, setProductPage] = useState(1);
+  const [unmatchedPage, setUnmatchedPage] = useState(1);
+  const [skippedPage, setSkippedPage] = useState(1);
+  const [matchedPage, setMatchedPage] = useState(1);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -155,6 +160,16 @@ export default function App() {
   useEffect(() => {
     window.localStorage.setItem("shopDomain", shopDomain);
   }, [shopDomain]);
+
+  useEffect(() => {
+    setProductPage(1);
+  }, [productSearch, mappingFilter, hideSkipQueue, showHidden, pageSize]);
+
+  useEffect(() => {
+    setUnmatchedPage(1);
+    setSkippedPage(1);
+    setMatchedPage(1);
+  }, [pageSize]);
 
   const startShopifyAuth = () => {
     const cleaned = shopDomain.trim();
@@ -320,6 +335,22 @@ export default function App() {
           Matched Orders
         </button>
       </div>
+      <div className="mapping-filters" style={{ marginBottom: 24 }}>
+        <label className="muted" htmlFor="pageSize">
+          Items per page:
+        </label>
+        <select
+          id="pageSize"
+          value={pageSize}
+          onChange={(event) => setPageSize(Number(event.target.value))}
+        >
+          {[10, 20, 50, 100].map((size) => (
+            <option key={size} value={size}>
+              {size}
+            </option>
+          ))}
+        </select>
+      </div>
 
       {error && (
         <div className="banner banner--error banner--actions">
@@ -416,8 +447,8 @@ export default function App() {
           </div>
 
           <div className="product-grid">
-            {products
-              .filter((product: ShopifyProduct) => {
+            {(() => {
+              const filtered = products.filter((product: ShopifyProduct) => {
                 const query = productSearch.trim().toLowerCase();
                 if (!query) {
                   return true;
@@ -427,11 +458,12 @@ export default function App() {
                   (variant.sku ?? "").toLowerCase().includes(query)
                 );
                 return inTitle || inSku;
-              })
-              .map((product: ShopifyProduct) => {
+              });
+
+              const visible = filtered.filter((product: ShopifyProduct) => {
                 const isHidden = hiddenProductIds.has(product.id);
                 if (isHidden && !showHidden) {
-                  return null;
+                  return false;
                 }
 
                 const visibleVariants = product.variants.filter((variant) => {
@@ -453,10 +485,40 @@ export default function App() {
                 });
 
                 if (visibleVariants.length === 0) {
-                  return null;
+                  return false;
                 }
 
-                return (
+                return true;
+              });
+
+              const totalPages = Math.max(1, Math.ceil(visible.length / pageSize));
+              const page = Math.min(productPage, totalPages);
+              const start = (page - 1) * pageSize;
+              const pageItems = visible.slice(start, start + pageSize);
+
+              return (
+                <>
+                  {pageItems.map((product: ShopifyProduct) => {
+                    const isHidden = hiddenProductIds.has(product.id);
+                    const visibleVariants = product.variants.filter((variant) => {
+                      const mapping = mappingFor(product.id, variant.id);
+                      const hasMapping = !!mapping;
+
+                      if (hideSkipQueue && mapping?.skipQueue) {
+                        return false;
+                      }
+
+                      if (mappingFilter === "mapped") {
+                        return hasMapping;
+                      }
+                      if (mappingFilter === "unmapped") {
+                        return !hasMapping;
+                      }
+
+                      return true;
+                    });
+
+                    return (
                   <div key={product.id} className="panel">
                 <div className="panel__header">
                   <div>
@@ -495,8 +557,16 @@ export default function App() {
                   ))}
                 </div>
               </div>
-            );
-          })}
+                    );
+                  })}
+                  <Pagination
+                    page={page}
+                    totalPages={totalPages}
+                    onPageChange={setProductPage}
+                  />
+                </>
+              );
+            })()}
           </div>
         </>
       ) : activeTab === "unmatched" ? (
@@ -505,19 +575,30 @@ export default function App() {
             const pending = unmatched.filter(
               (item) => !item.queuedAt && !item.skippedQueue
             );
+            const totalPages = Math.max(1, Math.ceil(pending.length / pageSize));
+            const page = Math.min(unmatchedPage, totalPages);
+            const start = (page - 1) * pageSize;
+            const pageItems = pending.slice(start, start + pageSize);
             return pending.length === 0 ? (
               <div className="muted">No unmatched orders.</div>
             ) : (
-              <div className="unmatched-list">
-                {pending.map((item) => (
-                  <UnmatchedRow
-                    key={item.id}
-                    item={item}
-                    onQueue={queueUnmatched}
-                    onDelete={deleteUnmatched}
-                  />
-                ))}
-              </div>
+              <>
+                <div className="unmatched-list">
+                  {pageItems.map((item) => (
+                    <UnmatchedRow
+                      key={item.id}
+                      item={item}
+                      onQueue={queueUnmatched}
+                      onDelete={deleteUnmatched}
+                    />
+                  ))}
+                </div>
+                <Pagination
+                  page={page}
+                  totalPages={totalPages}
+                  onPageChange={setUnmatchedPage}
+                />
+              </>
             );
           })()}
         </div>
@@ -527,19 +608,30 @@ export default function App() {
             const skipped = unmatched.filter(
               (item) => !item.queuedAt && item.skippedQueue
             );
+            const totalPages = Math.max(1, Math.ceil(skipped.length / pageSize));
+            const page = Math.min(skippedPage, totalPages);
+            const start = (page - 1) * pageSize;
+            const pageItems = skipped.slice(start, start + pageSize);
             return skipped.length === 0 ? (
               <div className="muted">No skipped queue orders.</div>
             ) : (
-              <div className="unmatched-list">
-                {skipped.map((item) => (
-                  <UnmatchedRow
-                    key={item.id}
-                    item={item}
-                    onQueue={queueUnmatched}
-                    onDelete={deleteUnmatched}
-                  />
-                ))}
-              </div>
+              <>
+                <div className="unmatched-list">
+                  {pageItems.map((item) => (
+                    <UnmatchedRow
+                      key={item.id}
+                      item={item}
+                      onQueue={queueUnmatched}
+                      onDelete={deleteUnmatched}
+                    />
+                  ))}
+                </div>
+                <Pagination
+                  page={page}
+                  totalPages={totalPages}
+                  onPageChange={setSkippedPage}
+                />
+              </>
             );
           })()}
         </div>
@@ -547,24 +639,69 @@ export default function App() {
         <div className="panel">
           {(() => {
             const matched = unmatched.filter((item) => !!item.queuedAt);
+            const totalPages = Math.max(1, Math.ceil(matched.length / pageSize));
+            const page = Math.min(matchedPage, totalPages);
+            const start = (page - 1) * pageSize;
+            const pageItems = matched.slice(start, start + pageSize);
             return matched.length === 0 ? (
               <div className="muted">No matched orders yet.</div>
             ) : (
-              <div className="unmatched-list">
-                {matched.map((item) => (
-                  <UnmatchedRow
-                    key={item.id}
-                    item={item}
-                    onQueue={queueUnmatched}
-                    onDelete={deleteUnmatched}
-                    readOnly
-                  />
-                ))}
-              </div>
+              <>
+                <div className="unmatched-list">
+                  {pageItems.map((item) => (
+                    <UnmatchedRow
+                      key={item.id}
+                      item={item}
+                      onQueue={queueUnmatched}
+                      onDelete={deleteUnmatched}
+                      readOnly
+                    />
+                  ))}
+                </div>
+                <Pagination
+                  page={page}
+                  totalPages={totalPages}
+                  onPageChange={setMatchedPage}
+                />
+              </>
             );
           })()}
         </div>
       )}
+    </div>
+  );
+}
+
+type PaginationProps = {
+  page: number;
+  totalPages: number;
+  onPageChange: (page: number) => void;
+};
+
+function Pagination({ page, totalPages, onPageChange }: PaginationProps) {
+  if (totalPages <= 1) {
+    return null;
+  }
+
+  return (
+    <div className="mapping-filters" style={{ justifyContent: "flex-end" }}>
+      <button
+        className="btn btn--ghost"
+        onClick={() => onPageChange(Math.max(1, page - 1))}
+        disabled={page <= 1}
+      >
+        Previous
+      </button>
+      <span className="muted">
+        Page {page} of {totalPages}
+      </span>
+      <button
+        className="btn btn--ghost"
+        onClick={() => onPageChange(Math.min(totalPages, page + 1))}
+        disabled={page >= totalPages}
+      >
+        Next
+      </button>
     </div>
   );
 }
